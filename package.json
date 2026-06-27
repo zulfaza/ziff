@@ -7,7 +7,11 @@
     "dev": "vite --host 127.0.0.1",
     "start": "env -u ELECTRON_RUN_AS_NODE electron .",
     "build": "tsc -p tsconfig.json && vite build",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "tsx --test src/**/*.test.ts",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check"
   },
   "keywords": [],
   "author": "",

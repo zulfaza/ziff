@@ -78,28 +78,22 @@ export function App() {
   const [loadState, setLoadState] = useState<LoadState>({ type: "loading" });
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [diffPreviews, setDiffPreviews] = useState<readonly DiffPreview[]>([]);
-  const [readPaths, setReadPaths] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
-  const [collapsedPaths, setCollapsedPaths] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
+  const [readPaths, setReadPaths] = useState<ReadonlySet<string>>(() => new Set());
+  const [collapsedPaths, setCollapsedPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [viewMode, setViewMode] = useState<ViewMode>("split");
   const [allCollapsed, setAllCollapsed] = useState(false);
   const [openHeaderMenu, setOpenHeaderMenu] = useState<HeaderMenu | null>(null);
-  const [recentProjects, setRecentProjects] = useState<
-    readonly RecentProject[]
-  >(() => readRecentProjects());
+  const [recentProjects, setRecentProjects] = useState<readonly RecentProject[]>(() =>
+    readRecentProjects(),
+  );
   const [sidebarWidth, setSidebarWidth] = useState(360);
   const [diffPanelWidth, setDiffPanelWidth] = useState(minSplitWidth);
   const [leftWidth, setLeftWidth] = useState(50);
   const diffPanelRef = useRef<HTMLElement | null>(null);
   const snapshot = loadState.type === "ready" ? loadState.snapshot : null;
-  const selectedFile =
-    snapshot?.files.find((file) => file.path === selectedPath) ?? null;
+  const selectedFile = snapshot?.files.find((file) => file.path === selectedPath) ?? null;
   const totals = useMemo(() => getTotals(snapshot?.files ?? []), [snapshot]);
-  const effectiveViewMode: ViewMode =
-    diffPanelWidth < minSplitWidth ? "stacked" : viewMode;
+  const effectiveViewMode: ViewMode = diffPanelWidth < minSplitWidth ? "stacked" : viewMode;
 
   useEffect(() => {
     void window.ziff.getSnapshot().then((snapshot) => {
@@ -107,11 +101,7 @@ export function App() {
         setLoadState({ type: "empty" });
       } else {
         setLoadState({ type: "ready", snapshot });
-        rememberProject(
-          snapshot.info.projectName,
-          snapshot.info.path,
-          setRecentProjects,
-        );
+        rememberProject(snapshot.info.projectName, snapshot.info.path, setRecentProjects);
         setSelectedPath(snapshot.files[0]?.path ?? null);
       }
     });
@@ -119,10 +109,7 @@ export function App() {
 
   useEffect(() => {
     function closeMenu(event: MouseEvent) {
-      if (
-        event.target instanceof Element &&
-        event.target.closest(".header-menu-wrap") != null
-      ) {
+      if (event.target instanceof Element && event.target.closest(".header-menu-wrap") != null) {
         return;
       }
       setOpenHeaderMenu(null);
@@ -244,10 +231,7 @@ export function App() {
     }
     setLoadState({ type: "ready", snapshot: next });
     rememberProject(next.info.projectName, next.info.path, setRecentProjects);
-    if (
-      selectedPath == null ||
-      next.files.every((file) => file.path !== selectedPath)
-    ) {
+    if (selectedPath == null || next.files.every((file) => file.path !== selectedPath)) {
       setSelectedPath(next.files[0]?.path ?? null);
     }
   }
@@ -256,10 +240,7 @@ export function App() {
     const next = await action();
     setLoadState({ type: "ready", snapshot: next });
     rememberProject(next.info.projectName, next.info.path, setRecentProjects);
-    if (
-      selectedPath == null ||
-      next.files.every((file) => file.path !== selectedPath)
-    ) {
+    if (selectedPath == null || next.files.every((file) => file.path !== selectedPath)) {
       setSelectedPath(next.files[0]?.path ?? null);
     }
   }
@@ -303,11 +284,7 @@ export function App() {
           onSwitchProject={(path) => void switchWorktree(path)}
           onSwitchWorktree={(path) => void switchWorktree(path)}
         />
-        <button
-          className="icon-button"
-          title="Refresh"
-          onClick={() => void refresh()}
-        >
+        <button className="icon-button" title="Refresh" onClick={() => void refresh()}>
           <RefreshCw size={15} />
         </button>
       </header>
@@ -315,9 +292,7 @@ export function App() {
       <div className="workbench">
         <aside className="sidebar" style={{ width: sidebarWidth }}>
           <section className="sidebar-tabs">
-            <button className="tab active">
-              Changes ({loadState.snapshot.files.length})
-            </button>
+            <button className="tab active">Changes ({loadState.snapshot.files.length})</button>
             <button className="tab">History</button>
           </section>
           <section className="sidebar-actions">
@@ -325,9 +300,7 @@ export function App() {
               View Diff
             </button>
             <span className="positive">+{formatter.format(totals.added)}</span>
-            <span className="negative">
-              -{formatter.format(totals.deleted)}
-            </span>
+            <span className="negative">-{formatter.format(totals.deleted)}</span>
             <button
               className="small-button"
               onClick={() => void replaceSnapshot(window.ziff.stageAll)}
@@ -359,11 +332,7 @@ export function App() {
               title={allCollapsed ? "Expand previews" : "Collapse previews"}
               onClick={() => setAllCollapsed(!allCollapsed)}
             >
-              {allCollapsed ? (
-                <ChevronRight size={16} />
-              ) : (
-                <ChevronDown size={16} />
-              )}
+              {allCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
             </button>
             <div className="segmented" aria-label="Diff layout">
               <button
@@ -378,9 +347,7 @@ export function App() {
                 disabled={diffPanelWidth < minSplitWidth}
                 onClick={() => setViewMode("split")}
                 title={
-                  diffPanelWidth < minSplitWidth
-                    ? "Split diff needs more width"
-                    : "Split diff"
+                  diffPanelWidth < minSplitWidth ? "Split diff needs more width" : "Split diff"
                 }
               >
                 <Columns2 size={16} />
@@ -391,21 +358,13 @@ export function App() {
               <>
                 <button
                   className="toolbar-button"
-                  onClick={() =>
-                    void replaceSnapshot(() =>
-                      window.ziff.stage(selectedFile.path),
-                    )
-                  }
+                  onClick={() => void replaceSnapshot(() => window.ziff.stage(selectedFile.path))}
                 >
                   Stage
                 </button>
                 <button
                   className="toolbar-button"
-                  onClick={() =>
-                    void replaceSnapshot(() =>
-                      window.ziff.unstage(selectedFile.path),
-                    )
-                  }
+                  onClick={() => void replaceSnapshot(() => window.ziff.unstage(selectedFile.path))}
                 >
                   Unstage
                 </button>
@@ -490,10 +449,7 @@ function RepoHeader({
         onClick={() => onMenuChange(toggleMenu(menu, "branch"))}
       >
         {menu === "branch" ? (
-          <BranchMenu
-            branches={info.branches}
-            onSwitchBranch={onSwitchBranch}
-          />
+          <BranchMenu branches={info.branches} onSwitchBranch={onSwitchBranch} />
         ) : null}
       </HeaderSelector>
     </nav>
@@ -515,10 +471,7 @@ function HeaderSelector({
 }) {
   return (
     <div className="header-menu-wrap">
-      <button
-        className={active ? "header-selector active" : "header-selector"}
-        onClick={onClick}
-      >
+      <button className={active ? "header-selector active" : "header-selector"} onClick={onClick}>
         {icon}
         <span>{label}</span>
       </button>
@@ -544,18 +497,12 @@ function ProjectMenu({
   );
   return (
     <section className="header-menu project-menu">
-      <SearchField
-        onChange={setQuery}
-        placeholder="Search projects..."
-        value={query}
-      />
+      <SearchField onChange={setQuery} placeholder="Search projects..." value={query} />
       <div className="menu-section-title">Recent Projects</div>
       <div className="menu-list">
         {filteredProjects.map((project) => (
           <button
-            className={
-              project.path === currentPath ? "menu-row active" : "menu-row"
-            }
+            className={project.path === currentPath ? "menu-row active" : "menu-row"}
             key={project.path}
             onClick={() => onSwitchProject(project.path)}
           >
@@ -594,9 +541,7 @@ function WorktreeMenu({
       />
       <button className="menu-row create-row">
         <Plus size={18} />
-        <span className="menu-primary">
-          Create new worktree based on {currentBranch}
-        </span>
+        <span className="menu-primary">Create new worktree based on {currentBranch}</span>
       </button>
       <div className="menu-list">
         {filteredWorktrees.map((worktree) => (
@@ -689,9 +634,7 @@ function SearchField({
 }
 
 function CheckMark({ visible }: { visible: boolean }) {
-  return (
-    <span className="menu-check">{visible ? <Check size={15} /> : null}</span>
-  );
+  return <span className="menu-check">{visible ? <Check size={15} /> : null}</span>;
 }
 
 function ResizeHandle({
@@ -708,20 +651,42 @@ function ResizeHandle({
   value: number;
 }) {
   function startResize(event: PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
     const startX = event.clientX;
     const startValue = value;
+    let nextValue = startValue;
+    let frameId: number | null = null;
+
+    document.documentElement.classList.add("is-resizing");
+    window.getSelection()?.removeAllRanges();
+
+    function flushResize() {
+      frameId = null;
+      onResize(nextValue);
+    }
 
     function update(nextEvent: globalThis.PointerEvent) {
-      onResize(clamp(startValue + nextEvent.clientX - startX, min, max));
+      nextValue = clamp(startValue + nextEvent.clientX - startX, min, max);
+      if (frameId == null) {
+        frameId = window.requestAnimationFrame(flushResize);
+      }
     }
 
     function stopResize() {
       window.removeEventListener("pointermove", update);
       window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+      document.documentElement.classList.remove("is-resizing");
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId);
+        frameId = null;
+        onResize(nextValue);
+      }
     }
 
     window.addEventListener("pointermove", update);
     window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
   }
 
   return (
@@ -889,21 +854,11 @@ function TreeNode({
 
   return (
     <div
-      className={
-        node.path === selectedPath
-          ? "tree-row file-row selected"
-          : "tree-row file-row"
-      }
-      style={{ paddingLeft: 20 }}
+      className={node.path === selectedPath ? "tree-row file-row selected" : "tree-row file-row"}
+      style={{ paddingLeft: 12 }}
     >
-      <button
-        className="tree-file-button"
-        onClick={() => onSelect(node.path)}
-        title={node.path}
-      >
-        <span
-          className={`file-change-icon ${getPrimaryArea(node.file.areas)}`}
-        />
+      <button className="tree-file-button" onClick={() => onSelect(node.path)} title={node.path}>
+        <span className={`file-change-icon ${getPrimaryArea(node.file.areas)}`} />
         <span>{node.name}</span>
       </button>
       <span className="tree-stats">
@@ -950,6 +905,18 @@ function DiffPreviewList({
 }) {
   const previewRefs = useRef(new Map<string, HTMLElement>());
 
+  function togglePreview(path: string, isCollapsed: boolean) {
+    onTogglePreview(path);
+    if (isCollapsed) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      const preview = previewRefs.current.get(path);
+      preview?.scrollIntoView({ block: "start", inline: "nearest" });
+    });
+  }
+
   useEffect(() => {
     if (selectedPath == null) {
       return;
@@ -970,9 +937,7 @@ function DiffPreviewList({
         return (
           <section
             className={
-              preview.file.path === selectedPath
-                ? "file-preview selected"
-                : "file-preview"
+              preview.file.path === selectedPath ? "file-preview selected" : "file-preview"
             }
             key={preview.file.path}
             ref={(element) => {
@@ -986,16 +951,10 @@ function DiffPreviewList({
             <header className="file-preview-header">
               <button
                 className="preview-toggle"
-                onClick={() => onTogglePreview(preview.file.path)}
-                title={
-                  isCollapsed ? "Expand file preview" : "Collapse file preview"
-                }
+                onClick={() => togglePreview(preview.file.path, isCollapsed)}
+                title={isCollapsed ? "Expand file preview" : "Collapse file preview"}
               >
-                {isCollapsed ? (
-                  <ChevronRight size={14} />
-                ) : (
-                  <ChevronDown size={14} />
-                )}
+                {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
               </button>
               <input
                 aria-label={`Mark ${preview.file.path} read`}
@@ -1012,17 +971,12 @@ function DiffPreviewList({
               >
                 <strong>{getBasename(preview.file.path)}</strong>
               </button>
-              <span className="file-dir">
-                {getDirectory(preview.file.path)}
-              </span>
+              <span className="file-dir">{getDirectory(preview.file.path)}</span>
               <span className="preview-stats">
                 <span className="positive">+{preview.file.added}</span>
                 <span className="negative">-{preview.file.deleted}</span>
               </span>
-              <button
-                className="toolbar-button"
-                onClick={() => onOpenFile(preview.file.path)}
-              >
+              <button className="toolbar-button" onClick={() => onOpenFile(preview.file.path)}>
                 Open File
               </button>
             </header>
@@ -1106,11 +1060,7 @@ function HunkView({
         {hunk.header}
       </div>
       {hunk.rows.map((row, index) => (
-        <SplitRow
-          key={`${index}-${lineKey(row)}`}
-          leftWidth={leftWidth}
-          row={row}
-        />
+        <SplitRow key={`${index}-${lineKey(row)}`} leftWidth={leftWidth} row={row} />
       ))}
       <SplitResizeHandle
         max={72}
@@ -1137,26 +1087,46 @@ function SplitResizeHandle({
   value: number;
 }) {
   function startResize(event: PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
     const bounds = event.currentTarget.parentElement?.getBoundingClientRect();
     if (bounds == null || bounds.width <= 0) {
       return;
     }
     const boundsLeft = bounds.left;
     const boundsWidth = bounds.width;
+    let nextValue = value;
+    let frameId: number | null = null;
+
+    document.documentElement.classList.add("is-resizing");
+    window.getSelection()?.removeAllRanges();
+
+    function flushResize() {
+      frameId = null;
+      onResize(nextValue);
+    }
 
     function update(nextEvent: globalThis.PointerEvent) {
-      onResize(
-        clamp(((nextEvent.clientX - boundsLeft) / boundsWidth) * 100, min, max),
-      );
+      nextValue = clamp(((nextEvent.clientX - boundsLeft) / boundsWidth) * 100, min, max);
+      if (frameId == null) {
+        frameId = window.requestAnimationFrame(flushResize);
+      }
     }
 
     function stopResize() {
       window.removeEventListener("pointermove", update);
       window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+      document.documentElement.classList.remove("is-resizing");
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId);
+        frameId = null;
+        onResize(nextValue);
+      }
     }
 
     window.addEventListener("pointermove", update);
     window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
   }
 
   return (
@@ -1174,29 +1144,13 @@ function SplitResizeHandle({
   );
 }
 
-function SplitRow({
-  leftWidth,
-  row,
-}: {
-  leftWidth: number;
-  row: SplitDiffRow;
-}) {
+function SplitRow({ leftWidth, row }: { leftWidth: number; row: SplitDiffRow }) {
   const style = { gridTemplateColumns: `${leftWidth}% 1fr` };
   if (row.kind === "context") {
     return (
       <div className="split-row" style={style}>
-        <CodeCell
-          side="old"
-          line={row.oldLine}
-          text={row.text}
-          tone="context"
-        />
-        <CodeCell
-          side="new"
-          line={row.newLine}
-          text={row.text}
-          tone="context"
-        />
+        <CodeCell side="old" line={row.oldLine} text={row.text} tone="context" />
+        <CodeCell side="new" line={row.newLine} text={row.text} tone="context" />
       </div>
     );
   }
@@ -1238,36 +1192,16 @@ function SplitRow({
 
 function renderStackedRow(row: SplitDiffRow, index: number) {
   if (row.kind === "context") {
-    return [
-      <CodeCell
-        key={index}
-        side="both"
-        line={row.newLine}
-        text={row.text}
-        tone="context"
-      />,
-    ];
+    return [<CodeCell key={index} side="both" line={row.newLine} text={row.text} tone="context" />];
   }
   if (row.kind === "delete") {
     return [
-      <CodeCell
-        key={index}
-        side="both"
-        line={row.oldLine}
-        text={`- ${row.text}`}
-        tone="delete"
-      />,
+      <CodeCell key={index} side="both" line={row.oldLine} text={`- ${row.text}`} tone="delete" />,
     ];
   }
   if (row.kind === "add") {
     return [
-      <CodeCell
-        key={index}
-        side="both"
-        line={row.newLine}
-        text={`+ ${row.text}`}
-        tone="add"
-      />,
+      <CodeCell key={index} side="both" line={row.newLine} text={`+ ${row.text}`} tone="add" />,
     ];
   }
   return [
@@ -1277,10 +1211,7 @@ function renderStackedRow(row: SplitDiffRow, index: number) {
       line={row.oldLine}
       text={`- ${row.oldText}`}
       tone="delete"
-      fragments={withPrefix(
-        "- ",
-        getInlineFragments(row.oldText, row.newText, "old"),
-      )}
+      fragments={withPrefix("- ", getInlineFragments(row.oldText, row.newText, "old"))}
     />,
     <CodeCell
       key={`${index}-new`}
@@ -1288,10 +1219,7 @@ function renderStackedRow(row: SplitDiffRow, index: number) {
       line={row.newLine}
       text={`+ ${row.newText}`}
       tone="add"
-      fragments={withPrefix(
-        "+ ",
-        getInlineFragments(row.oldText, row.newText, "new"),
-      )}
+      fragments={withPrefix("+ ", getInlineFragments(row.oldText, row.newText, "new"))}
     />,
   ];
 }
@@ -1344,10 +1272,7 @@ function getInlineFragments(
   newText: string,
   side: FragmentSide,
 ): readonly InlineFragment[] {
-  const edits = diffTokens(
-    tokenizeForInlineDiff(oldText),
-    tokenizeForInlineDiff(newText),
-  );
+  const edits = diffTokens(tokenizeForInlineDiff(oldText), tokenizeForInlineDiff(newText));
   return edits.flatMap((edit): readonly InlineFragment[] => {
     if (edit.kind === "same") {
       return [
@@ -1446,8 +1371,7 @@ function buildLcsDistances(
       const oldToken = oldTokens[oldIndex];
       const newToken = newTokens[newIndex];
       if (oldToken != null && newToken != null && oldToken === newToken) {
-        rows[oldIndex][newIndex] =
-          getDistance(rows, oldIndex + 1, newIndex + 1) + 1;
+        rows[oldIndex][newIndex] = getDistance(rows, oldIndex + 1, newIndex + 1) + 1;
       } else {
         rows[oldIndex][newIndex] = Math.max(
           getDistance(rows, oldIndex + 1, newIndex),
@@ -1510,11 +1434,7 @@ function createFolder(name: string, path: string): TreeFolder {
   return { name, path, children: [] };
 }
 
-function insertFile(
-  folder: TreeFolder,
-  parts: readonly string[],
-  file: GitFileEntry,
-): void {
+function insertFile(folder: TreeFolder, parts: readonly string[], file: GitFileEntry): void {
   const [head, ...tail] = parts;
   if (head == null) {
     return;
@@ -1525,9 +1445,7 @@ function insertFile(
   }
 
   const nextPath = folder.path.length === 0 ? head : `${folder.path}/${head}`;
-  let existing = folder.children.find(
-    (node) => node.kind === "folder" && node.path === nextPath,
-  );
+  let existing = folder.children.find((node) => node.kind === "folder" && node.path === nextPath);
   if (existing == null || existing.kind !== "folder") {
     existing = {
       kind: "folder",
@@ -1539,11 +1457,7 @@ function insertFile(
     };
     folder.children.push(existing);
   }
-  insertFile(
-    { name: existing.name, path: existing.path, children: existing.children },
-    tail,
-    file,
-  );
+  insertFile({ name: existing.name, path: existing.path, children: existing.children }, tail, file);
   existing.added += file.added;
   existing.deleted += file.deleted;
 }
@@ -1613,10 +1527,7 @@ function lineKey(row: SplitDiffRow): string {
   }
 }
 
-function toggleMenu(
-  current: HeaderMenu | null,
-  next: HeaderMenu,
-): HeaderMenu | null {
+function toggleMenu(current: HeaderMenu | null, next: HeaderMenu): HeaderMenu | null {
   return current === next ? null : next;
 }
 
@@ -1626,10 +1537,10 @@ function rememberProject(
   setRecentProjects: Dispatch<SetStateAction<readonly RecentProject[]>>,
 ): void {
   setRecentProjects((current) => {
-    const next = [
-      { name, path },
-      ...current.filter((project) => project.path !== path),
-    ].slice(0, 12);
+    const next = [{ name, path }, ...current.filter((project) => project.path !== path)].slice(
+      0,
+      12,
+    );
     writeRecentProjects(next);
     return next;
   });
