@@ -1,4 +1,4 @@
-import { ChevronsDownUp, ChevronsUpDown, Columns2, RefreshCw, Rows3 } from "lucide-react";
+import { ChevronsDownUp, ChevronsUpDown, Columns2, RefreshCw, Rows3, Settings2 } from "lucide-react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_SPLIT_WIDTH,
@@ -11,14 +11,16 @@ import {
   Splash,
 } from "./components";
 import { getTotals } from "./diffModel";
-import { resolveAppHotkey } from "./hotkeys";
+import { resolveShortcutCommand } from "../keybindingsRuntime";
 import { forgetProject, readRecentProjects, rememberProject } from "./recentProjects";
+import { SettingsModal } from "./settings";
 import type { DiffPreview, HeaderMenu, LoadState, RecentProject, SidebarTab } from "./types";
 import type {
   CommitEntry,
   DiffComparison,
   RepoSnapshot,
-  SidebarSettings,
+  ResolvedKeybindingsConfig,
+  UserSettings,
   ViewMode,
 } from "../shared";
 
@@ -41,6 +43,7 @@ export function App() {
   const [collapsedPaths, setCollapsedPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [viewMode, setViewMode] = useState<ViewMode>("split");
   const [openHeaderMenu, setOpenHeaderMenu] = useState<HeaderMenu | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("changes");
   const [commits, setCommits] = useState<readonly CommitEntry[]>([]);
@@ -51,12 +54,17 @@ export function App() {
   const [sidebarWidth, setSidebarWidth] = useState(defaultSidebarWidth);
   const [isDiffPanelNarrow, setIsDiffPanelNarrow] = useState(false);
   const [leftWidth, setLeftWidth] = useState(DEFAULT_SPLIT_WIDTH);
-  const [sidebarSettings, setSidebarSettings] = useState<SidebarSettings>({
+  const [userSettings, setUserSettings] = useState<UserSettings>({
+    defaultViewMode: "split",
     fileGroupBy: "status",
     fileListView: "tree",
+    restoreLastRepo: true,
   });
+  const [keybindings, setKeybindings] = useState<ResolvedKeybindingsConfig>([]);
+  const [keybindingsPath, setKeybindingsPath] = useState("");
   const diffPanelRef = useRef<HTMLElement | null>(null);
   const diffContextLinesRef = useRef(diffContextLines);
+  const refreshRef = useRef<() => void>(() => {});
   diffContextLinesRef.current = diffContextLines;
   const snapshot = loadState.type === "ready" ? loadState.snapshot : null;
   const totals = useMemo(() => getTotals(snapshot?.files ?? []), [snapshot]);
@@ -95,9 +103,23 @@ export function App() {
       }
       setLoadState({ type: "empty" });
     });
-    void window.ziff.getSettings().then(setSidebarSettings);
+    void window.ziff.getSettings().then((nextSettings) => {
+      setUserSettings(nextSettings);
+      setViewMode(nextSettings.defaultViewMode);
+    });
+    void window.ziff.getKeybindings().then(setKeybindings);
+    void window.ziff.getKeybindingsConfigPath().then(setKeybindingsPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => window.ziff.onKeybindingsChanged(() => {
+    void window.ziff.getKeybindings().then(setKeybindings);
+  }), []);
+
+  useEffect(() => window.ziff.onOpenSettings(() => {
+    setSettingsOpen(true);
+    setOpenHeaderMenu(null);
+  }), []);
 
   useEffect(() => {
     function closeMenu(event: MouseEvent) {
@@ -110,48 +132,6 @@ export function App() {
     window.addEventListener("mousedown", closeMenu);
     return () => window.removeEventListener("mousedown", closeMenu);
   }, []);
-
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape" && openHeaderMenu != null) {
-        event.preventDefault();
-        setOpenHeaderMenu(null);
-        return;
-      }
-
-      const action = resolveAppHotkey(event);
-      if (action == null) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-
-      switch (action) {
-        case "openRecent":
-          if (loadState.type === "ready") {
-            setOpenHeaderMenu("project");
-          }
-          return;
-        case "openWorktree":
-          if (loadState.type === "ready") {
-            setOpenHeaderMenu("worktree");
-          }
-          return;
-        case "openBranch":
-          if (loadState.type === "ready") {
-            setOpenHeaderMenu("branch");
-          }
-          return;
-        case "toggleSidebar":
-          setSidebarVisible((visible) => !visible);
-          return;
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [loadState.type, openHeaderMenu]);
 
   useEffect(() => {
     if (snapshot == null) {
@@ -322,8 +302,13 @@ export function App() {
     });
   }
 
-  function updateSidebarSettings(patch: Partial<SidebarSettings>) {
-    void window.ziff.updateSettings(patch).then(setSidebarSettings);
+  function updateUserSettings(patch: Partial<UserSettings>) {
+    void window.ziff.updateSettings(patch).then((nextSettings) => {
+      setUserSettings(nextSettings);
+      if (patch.defaultViewMode != null) {
+        setViewMode(nextSettings.defaultViewMode);
+      }
+    });
   }
 
   async function chooseRepo() {
@@ -359,6 +344,72 @@ export function App() {
       setSelectedPath(next.files[0]?.path ?? null);
     }
   }
+  refreshRef.current = () => {
+    void refresh();
+  };
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        if (settingsOpen) {
+          event.preventDefault();
+          setSettingsOpen(false);
+          return;
+        }
+        if (openHeaderMenu != null) {
+          event.preventDefault();
+          setOpenHeaderMenu(null);
+          return;
+        }
+      }
+
+      const command = resolveShortcutCommand(event, keybindings, {
+        context: {
+          settingsOpen,
+          headerMenuOpen: openHeaderMenu != null,
+        },
+      });
+      if (command == null) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      switch (command) {
+        case "menu.project":
+          if (loadState.type === "ready") {
+            setOpenHeaderMenu("project");
+          }
+          return;
+        case "menu.worktree":
+          if (loadState.type === "ready") {
+            setOpenHeaderMenu("worktree");
+          }
+          return;
+        case "menu.branch":
+          if (loadState.type === "ready") {
+            setOpenHeaderMenu("branch");
+          }
+          return;
+        case "sidebar.toggle":
+          setSidebarVisible((visible) => !visible);
+          return;
+        case "settings.open":
+          setSettingsOpen(true);
+          setOpenHeaderMenu(null);
+          return;
+        case "repo.refresh":
+          if (loadState.type === "ready") {
+            refreshRef.current();
+          }
+          return;
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [keybindings, loadState.type, openHeaderMenu, settingsOpen]);
 
   async function replaceSnapshot(action: () => Promise<RepoSnapshot>) {
     const next = await action();
@@ -439,6 +490,23 @@ export function App() {
 
   return (
     <main className="app-shell">
+      {settingsOpen ? (
+        <SettingsModal
+          keybindings={keybindings}
+          keybindingsPath={keybindingsPath}
+          onClose={() => setSettingsOpen(false)}
+          onOpenKeybindingsConfig={() => void window.ziff.openKeybindingsConfig()}
+          onResetKeybindings={() => void window.ziff.resetKeybindings().then(setKeybindings)}
+          onResetSettings={() =>
+            void window.ziff.resetSettings().then((nextSettings) => {
+              setUserSettings(nextSettings);
+              setViewMode(nextSettings.defaultViewMode);
+            })
+          }
+          onUpdateSettings={updateUserSettings}
+          settings={userSettings}
+        />
+      ) : null}
       <header className="topbar">
         <div className="traffic" />
         <RepoHeader
@@ -455,6 +523,9 @@ export function App() {
         />
         <button className="icon-button" title="Refresh" onClick={() => void refresh()}>
           <RefreshCw size={15} />
+        </button>
+        <button className="icon-button" title="Settings" onClick={() => setSettingsOpen(true)}>
+          <Settings2 size={15} />
         </button>
       </header>
 
@@ -484,14 +555,14 @@ export function App() {
           {sidebarTab === "changes" ? (
             <ChangesPanel
               files={loadState.snapshot.files}
-              fileGroupBy={sidebarSettings.fileGroupBy}
-              fileListView={sidebarSettings.fileListView}
+              fileGroupBy={userSettings.fileGroupBy}
+              fileListView={userSettings.fileListView}
               readPaths={readPaths}
               selectedPath={selectedPath}
               totalsAdded={totals.added}
               totalsDeleted={totals.deleted}
-              onFileGroupByChange={(fileGroupBy) => updateSidebarSettings({ fileGroupBy })}
-              onFileListViewChange={(fileListView) => updateSidebarSettings({ fileListView })}
+              onFileGroupByChange={(fileGroupBy) => updateUserSettings({ fileGroupBy })}
+              onFileListViewChange={(fileListView) => updateUserSettings({ fileListView })}
               onSelect={selectPath}
               onToggleRead={toggleRead}
               onToggleReadMany={setManyRead}

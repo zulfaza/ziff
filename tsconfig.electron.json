@@ -18,5 +18,5 @@
     "target": "ES2024",
     "types": ["node"]
   },
-  "include": ["electron", "src/shared.ts", "src/gitDiff.ts"]
+  "include": ["electron", "src/shared.ts", "src/gitDiff.ts", "src/keybindings.ts"]
 }

@@ -1,16 +1,30 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { app, BrowserWindow, dialog, ipcMain, Menu } from "electron";
-import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from "electron";
+import type { IpcMainInvokeEvent, MenuItemConstructorOptions, WebContents } from "electron";
 import {
   buildComparisonFileEntries,
   buildFileEntries,
   parseSyntheticAddedFile,
   parseUnifiedDiff,
 } from "../src/gitDiff";
+import {
+  DEFAULT_USER_SETTINGS,
+  getKeybindingsConfigPath,
+  loadResolvedKeybindings,
+  parseUserSettingsPatch,
+  readSettings,
+  resetKeybindings,
+  syncDefaultKeybindingsOnStartup,
+  toUserSettings,
+  watchKeybindingsConfig,
+  writeSettings,
+  type AppSettings,
+  type WindowSize,
+} from "./config";
 import type {
   BranchEntry,
   CommitEntry,
@@ -18,15 +32,13 @@ import type {
   DiffComparison,
   DiffRequest,
   FileDiff,
-  FileGroupBy,
-  FileListView,
   GitFileEntry,
   ImagePreview,
   ImagePreviewRequest,
   ImagePreviewMimeType,
   RepoInfo,
   RepoSnapshot,
-  SidebarSettings,
+  UserSettings,
   WorktreeEntry,
 } from "../src/shared";
 
@@ -38,18 +50,9 @@ const maxDiffContextLines = 80;
 
 app.setName(APP_NAME);
 
-interface WindowSize {
-  height: number;
-  width: number;
-}
+type PreferredEditor = AppSettings["preferredEditor"];
 
-interface ZiffWindowState {
-  repoPath: string | null;
-  restoreRepoOnFirstSnapshot: boolean;
-}
-
-type PreferredEditor = "zed";
-type HistoricalComparison = Exclude<DiffComparison, { type: "working-tree" }>;
+interface HistoricalComparison extends Exclude<DiffComparison, { type: "working-tree" }> {}
 
 interface HistoricalImagePreviewRequest {
   comparison: HistoricalComparison;
@@ -57,27 +60,18 @@ interface HistoricalImagePreviewRequest {
   previousPath: string | null;
 }
 
+interface ZiffWindowState {
+  repoPath: string | null;
+  restoreRepoOnFirstSnapshot: boolean;
+}
+
 interface EditorDefinition {
   commands: readonly [string, ...string[]];
   macAppName: string;
 }
 
-interface AppSettings extends SidebarSettings {
-  lastRepoPath: string | null;
-  preferredEditor: PreferredEditor;
-  windowSize: WindowSize | null;
-}
-
 const EDITOR_DEFINITIONS: Record<PreferredEditor, EditorDefinition> = {
   zed: { commands: ["zed", "zeditor"], macAppName: "Zed" },
-};
-
-const DEFAULT_SETTINGS: AppSettings = {
-  fileGroupBy: "status",
-  fileListView: "tree",
-  lastRepoPath: null,
-  preferredEditor: "zed",
-  windowSize: null,
 };
 
 void app.whenReady().then(async () => {
@@ -87,8 +81,18 @@ void app.whenReady().then(async () => {
     dock.setIcon(iconPath);
   }
 
+  await syncDefaultKeybindingsOnStartup();
+  watchKeybindingsConfig(() => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send("keybindings:changed");
+      }
+    }
+  });
+
   Menu.setApplicationMenu(Menu.buildFromTemplate(buildApplicationMenu()));
-  await createWindow({ restoreLastRepo: true });
+  const settings = await readSettings();
+  await createWindow({ restoreLastRepo: settings.restoreLastRepo });
 });
 
 app.on("activate", () => {
@@ -152,6 +156,13 @@ async function createWindow(options: CreateWindowOptions): Promise<BrowserWindow
   return window;
 }
 
+function sendOpenSettings(target: WebContents | null): void {
+  if (target == null || target.isDestroyed()) {
+    return;
+  }
+  target.send("app:open-settings");
+}
+
 function buildApplicationMenu(): MenuItemConstructorOptions[] {
   const fileSubmenu: MenuItemConstructorOptions[] = [
     {
@@ -160,6 +171,15 @@ function buildApplicationMenu(): MenuItemConstructorOptions[] {
         void createWindow({ restoreLastRepo: false });
       },
       label: "New Window",
+    },
+    { type: "separator" },
+    {
+      accelerator: "CmdOrCtrl+,",
+      click: () => {
+        const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+        sendOpenSettings(window?.webContents ?? null);
+      },
+      label: "Settings...",
     },
     { type: "separator" },
     { role: process.platform === "darwin" ? "close" : "quit" },
@@ -179,6 +199,15 @@ function buildApplicationMenu(): MenuItemConstructorOptions[] {
       label: APP_NAME,
       submenu: [
         { role: "about" },
+        { type: "separator" },
+        {
+          accelerator: "CmdOrCtrl+,",
+          click: () => {
+            const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+            sendOpenSettings(window?.webContents ?? null);
+          },
+          label: "Settings...",
+        },
         { type: "separator" },
         { role: "services" },
         { type: "separator" },
@@ -223,22 +252,36 @@ function getMinWindowSize(): WindowSize {
   return { height: 720, width: 1040 };
 }
 
-ipcMain.handle("settings:get", async (): Promise<SidebarSettings> => {
-  const settings = await readSettings();
-  return {
-    fileGroupBy: settings.fileGroupBy,
-    fileListView: settings.fileListView,
-  };
+ipcMain.handle("settings:get", async (): Promise<UserSettings> => {
+  return toUserSettings(await readSettings());
 });
 
-ipcMain.handle("settings:update", async (_event, patch: unknown): Promise<SidebarSettings> => {
+ipcMain.handle("settings:update", async (_event, patch: unknown): Promise<UserSettings> => {
   const settings = await readSettings();
-  const next = { ...settings, ...parseSidebarSettingsPatch(patch) };
+  const next = { ...settings, ...parseUserSettingsPatch(patch) };
   await writeSettings(next);
-  return {
-    fileGroupBy: next.fileGroupBy,
-    fileListView: next.fileListView,
+  return toUserSettings(next);
+});
+
+ipcMain.handle("settings:reset", async (): Promise<UserSettings> => {
+  const settings = await readSettings();
+  const next: AppSettings = {
+    ...settings,
+    ...DEFAULT_USER_SETTINGS,
   };
+  await writeSettings(next);
+  return toUserSettings(next);
+});
+
+ipcMain.handle("keybindings:get", async () => loadResolvedKeybindings());
+
+ipcMain.handle("keybindings:path", async () => getKeybindingsConfigPath());
+
+ipcMain.handle("keybindings:reset", async () => resetKeybindings());
+
+ipcMain.handle("keybindings:open", async () => {
+  const settings = await readSettings();
+  await openPathInEditor(settings.preferredEditor, getKeybindingsConfigPath());
 });
 
 ipcMain.handle("repo:choose", async (event): Promise<RepoSnapshot | null> => {
@@ -765,7 +808,7 @@ function getPreviewMimeType(path: string): ImagePreviewMimeType | null {
 
 async function restoreRepoPath(state: ZiffWindowState): Promise<void> {
   const settings = await readSettings();
-  if (settings.lastRepoPath == null) {
+  if (!settings.restoreLastRepo || settings.lastRepoPath == null) {
     return;
   }
 
@@ -797,101 +840,6 @@ async function rememberWindowSize(window: BrowserWindow | null): Promise<void> {
   } catch {
     return;
   }
-}
-
-async function readSettings(): Promise<AppSettings> {
-  try {
-    const raw = await readFile(getSettingsPath(), "utf8");
-    return parseSettings(JSON.parse(raw));
-  } catch {
-    return DEFAULT_SETTINGS;
-  }
-}
-
-async function writeSettings(settings: AppSettings): Promise<void> {
-  const path = getSettingsPath();
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(settings, null, 2), "utf8");
-}
-
-function getSettingsPath(): string {
-  return join(app.getPath("userData"), "settings.json");
-}
-
-function parseSettings(value: unknown): AppSettings {
-  if (typeof value !== "object" || value == null) {
-    return DEFAULT_SETTINGS;
-  }
-
-  const windowSize = "windowSize" in value ? parseWindowSize(value.windowSize) : null;
-  const sidebar = parseSidebarSettings(value);
-  const lastRepoPath =
-    "lastRepoPath" in value &&
-    typeof value.lastRepoPath === "string" &&
-    value.lastRepoPath.length > 0
-      ? value.lastRepoPath
-      : null;
-  const preferredEditor = parsePreferredEditor(
-    "preferredEditor" in value ? value.preferredEditor : undefined,
-  );
-
-  return { ...sidebar, lastRepoPath, preferredEditor, windowSize };
-}
-
-function parseSidebarSettings(value: unknown): SidebarSettings {
-  if (typeof value !== "object" || value == null) {
-    return {
-      fileGroupBy: DEFAULT_SETTINGS.fileGroupBy,
-      fileListView: DEFAULT_SETTINGS.fileListView,
-    };
-  }
-
-  return {
-    fileGroupBy: parseFileGroupBy("fileGroupBy" in value ? value.fileGroupBy : undefined),
-    fileListView: parseFileListView("fileListView" in value ? value.fileListView : undefined),
-  };
-}
-
-function parseSidebarSettingsPatch(value: unknown): Partial<SidebarSettings> {
-  if (typeof value !== "object" || value == null) {
-    return {};
-  }
-
-  const patch: Partial<SidebarSettings> = {};
-  if ("fileGroupBy" in value) {
-    patch.fileGroupBy = parseFileGroupBy(value.fileGroupBy);
-  }
-  if ("fileListView" in value) {
-    patch.fileListView = parseFileListView(value.fileListView);
-  }
-  return patch;
-}
-
-function parseFileGroupBy(value: unknown): FileGroupBy {
-  return value === "none" || value === "status" ? value : DEFAULT_SETTINGS.fileGroupBy;
-}
-
-function parseFileListView(value: unknown): FileListView {
-  return value === "list" || value === "tree" ? value : DEFAULT_SETTINGS.fileListView;
-}
-
-function parsePreferredEditor(value: unknown): PreferredEditor {
-  return value === "zed" ? value : DEFAULT_SETTINGS.preferredEditor;
-}
-
-function parseWindowSize(value: unknown): WindowSize | null {
-  if (
-    typeof value !== "object" ||
-    value == null ||
-    !("height" in value) ||
-    !("width" in value) ||
-    typeof value.height !== "number" ||
-    typeof value.width !== "number"
-  ) {
-    return null;
-  }
-
-  return normalizeWindowSize({ height: value.height, width: value.width });
 }
 
 function normalizeWindowSize(size: WindowSize): WindowSize {
