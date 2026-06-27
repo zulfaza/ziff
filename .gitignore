@@ -6,6 +6,7 @@ node_modules/
 
 # Build output
 dist/
+dist-electron/
 build/
 out/
 *.tsbuildinfo
@@ -27,6 +28,7 @@ coverage/
 
 # Runtime / cache
 .cache/
+.next/
 .temp/
 tmp/
 
