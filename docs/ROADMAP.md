@@ -10,11 +10,11 @@ Ziff is a local Git diff viewer. This doc tracks what we want to build and what'
 
 | Feature | Status | Summary |
 | --- | --- | --- |
-| [Diff by branch or commit](#1-diff-by-branch-or-commit) | `partial` | Working-tree diff works; branch/commit comparison not built |
+| [Diff by branch or commit](#1-diff-by-branch-or-commit) | `partial` | Working tree, branch, and commit diffs work; comparison not persisted across reload |
 | [Auto-sync Git state](#2-auto-sync-git-state) | `planned` | Manual refresh only today |
 | [Annotations (review & agent prompts)](#3-annotations-review--agent-prompts) | `planned` | Not started |
 | [PR review import & sync](#4-pr-review-import--sync) | `planned` | Not started |
-| [User settings](#5-user-settings) | `partial` | Sidebar prefs persist; no dedicated settings UI yet |
+| [User settings](#5-user-settings) | `partial` | Settings modal, general prefs, and keybindings; sync/GitHub/appearance not built |
 
 ---
 
@@ -33,20 +33,18 @@ Ziff is a local Git diff viewer. This doc tracks what we want to build and what'
 - [x] Branch list and checkout (`switchBranch`)
 - [x] Commit history list (last 200 commits)
 - [x] Worktree switching
+- [x] **Compare mode picker** — working tree | branch | commit (`ComparisonControls`)
+- [x] **Base / head selectors** — branch vs branch (e.g. `main...feature/foo`)
+- [x] **Branch diff API** — `repo:compare` → `git diff base...head`
+- [x] **Commit diff API** — `git show <hash>` for file list and per-file diffs
+- [x] **History interaction** — click a commit to load its patch in the main panel
+- [x] **Empty / binary handling** — “No changes” and “Binary file not shown” states in the diff panel
 
 #### Still to build
 
-- [ ] **Compare mode picker** — choose diff source: `working tree` | `branch` | `commit`
-- [ ] **Base / head selectors**
-  - Branch vs branch (e.g. `main...feature/foo`)
-  - Commit vs parent (single commit diff)
-  - Commit vs branch tip
-  - Commit range (optional, later)
-- [ ] **Branch diff API** — e.g. `git diff base...head` or `git diff base head`
-- [ ] **Commit diff API** — e.g. `git show <hash>` or `git diff <hash>^..<hash>`
-- [ ] **History interaction** — click a commit to load its diff in the main panel
 - [ ] **Persist comparison** in UI state (survive refresh within session)
-- [ ] **Empty / merge commit handling** — clear message when diff is empty or binary-only
+- [ ] **Commit range** (optional, later)
+- [ ] **Merge commit UX** — clearer messaging when a commit has no parent diff or multiple parents
 
 #### Acceptance criteria
 
@@ -56,8 +54,8 @@ Ziff is a local Git diff viewer. This doc tracks what we want to build and what'
 
 #### Notes
 
-- Current `getDiff(path)` only reads working tree / index (`electron/main.ts` → `repo:diff`).
-- `HistoryList` renders commits but has no selection handler yet.
+- `DiffComparison` and `repo:compare` live in `shared.ts` / `electron/main.ts`; working-tree diffs still use `repo:diff`.
+- Commit mode is entered from History — the toolbar commit button reflects the active selection but does not open a commit picker on its own.
 
 ---
 
@@ -174,17 +172,26 @@ Depends on: [§3 Annotations](#3-annotations-review--agent-prompts) (at least lo
 
 #### Already shipped
 
-- [x] Persist sidebar prefs — file list view (`list` | `tree`) and group-by (`none` | `status`)
-- [x] Settings storage — `settings.json` in app userData (`electron/main.ts`)
-- [x] Inline file-list settings menu (gear popover on Changes sidebar)
-- [x] Internal persistence — last opened repo path, window size (main process only, not user-editable yet)
+- [x] **Settings entry point** — Ziff → Settings… (app menu), header gear button, and `mod+,` shortcut
+- [x] **Settings modal** — General and Keybindings tabs (`src/app/settings.tsx`)
+- [x] **General**
+  - [x] Default diff layout — `split` | `stacked` (persisted; applied on launch and when reset)
+  - [x] Re-open last project on launch — toggle for `lastRepoPath` / `restoreLastRepo`
+  - [x] Changes sidebar — file list view (`list` | `tree`) and group-by (`none` | `status`)
+- [x] **Keybindings**
+  - [x] Config file — `~/config/ziff/keybindings.json` with defaults seeded on first run
+  - [x] Parser and runtime — shortcut strings, optional `when` expressions, merge with defaults (`src/keybindings.ts`, `src/keybindingsRuntime.ts`)
+  - [x] Settings tab — read-only command list, open config in editor, restore defaults
+  - [x] Hot reload — file watch in main process pushes `keybindings:changed` to renderer
+- [x] **API surface** — `UserSettings` in `shared.ts` (`SidebarSettings` deprecated); IPC `settings:*` and `keybindings:*` handlers
+- [x] **Config module** — `electron/config.ts` reads/writes settings and keybindings; migrates legacy files from Electron userData
+- [x] **Reset** — restore defaults for general settings and keybindings (per tab)
+- [x] Inline file-list settings menu (gear popover on Changes sidebar) — same source of truth as Settings modal
+- [x] Internal persistence — last opened repo path, window size, preferred editor (main process only, not user-editable yet)
 
 #### Still to build
 
-- [ ] **Settings entry point** — app menu item (e.g. Ziff → Settings…) and/or header button; opens a dedicated panel or modal
-- [ ] **General**
-  - [ ] Default diff view — `split` | `stacked` (persist and apply on file open)
-  - [ ] Re-open last repo on launch — toggle for `lastRepoPath` behavior
+- [ ] **In-app keybinding editor** — record/rebind shortcuts in the UI (v1 edits `keybindings.json` externally)
 - [ ] **Sync** (ties to [§2 Auto-sync](#2-auto-sync-git-state))
   - [ ] Enable / disable auto-sync
   - [ ] Debounce interval (advanced, optional)
@@ -195,8 +202,6 @@ Depends on: [§3 Annotations](#3-annotations-review--agent-prompts) (at least lo
 - [ ] **Appearance** (optional v1)
   - [ ] Theme — system | light | dark
   - [ ] Font size for diff content (optional)
-- [ ] **API surface** — extend `SidebarSettings` → `UserSettings` in `shared.ts`; expose safe subset to renderer; keep secrets in main process only
-- [ ] **Reset** — restore defaults per section or all settings
 
 #### Acceptance criteria
 
@@ -207,8 +212,8 @@ Depends on: [§3 Annotations](#3-annotations-review--agent-prompts) (at least lo
 
 #### Notes
 
-- Current types: `SidebarSettings` in `shared.ts`; main process `AppSettings` adds `lastRepoPath` and `windowSize`.
-- Consider macOS standard Preferences window vs in-app modal — modal is fine for v1.
+- User-facing config lives under `~/config/ziff/` (`settings.json`, `keybindings.json`); legacy Electron userData copies are migrated on first read.
+- Main process `AppSettings` extends `UserSettings` with `lastRepoPath`, `windowSize`, and `preferredEditor`.
 - Settings for annotations export defaults can land when [§3](#3-annotations-review--agent-prompts) ships.
 
 ---
@@ -217,8 +222,9 @@ Depends on: [§3 Annotations](#3-annotations-review--agent-prompts) (at least lo
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| Comparison state in `RepoSnapshot` / new API types | `planned` | Extend `shared.ts` |
-| Tests for diff ref parsing | `planned` | `src/gitDiff` + new git helpers |
+| Comparison state in `RepoSnapshot` / new API types | `partial` | `DiffComparison` + `repo:compare` shipped; session persistence still missing |
+| Tests for diff ref parsing | `partial` | `src/gitDiff.test.ts` covers comparison file lists; expand as ref parsing grows |
+| Keybinding parser / runtime tests | `done` | `src/keybindings.test.ts` |
 
 ---
 
@@ -228,6 +234,7 @@ Depends on: [§3 Annotations](#3-annotations-review--agent-prompts) (at least lo
 | --- | --- |
 | 2026-06-27 | Initial roadmap — four core features from product vision |
 | 2026-06-27 | Added [§5 User settings](#5-user-settings) — prefs, sync, GitHub, appearance |
+| 2026-06-27 | Updated [§1](#1-diff-by-branch-or-commit) and [§5](#5-user-settings) — branch/commit diff and settings modal shipped on `feat/settings` |
 
 ---
 
