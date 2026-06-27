@@ -1,0 +1,38 @@
+[
+  {
+    "label": "dev",
+    "command": "pnpm",
+    "args": ["dev"],
+    "tags": ["pnpm"],
+  },
+  {
+    "label": "start",
+    "command": "pnpm",
+    "args": ["start"],
+    "tags": ["pnpm"],
+  },
+  {
+    "label": "build",
+    "command": "pnpm",
+    "args": ["build"],
+    "tags": ["pnpm"],
+  },
+  {
+    "label": "test",
+    "command": "pnpm",
+    "args": ["test"],
+    "tags": ["pnpm"],
+  },
+  {
+    "label": "typecheck (app)",
+    "command": "pnpm",
+    "args": ["exec", "tsc", "-p", "tsconfig.json", "--noEmit"],
+    "tags": ["pnpm"],
+  },
+  {
+    "label": "typecheck (electron)",
+    "command": "pnpm",
+    "args": ["exec", "tsc", "-p", "tsconfig.electron.json", "--noEmit"],
+    "tags": ["pnpm"],
+  },
+]

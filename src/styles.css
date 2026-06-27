@@ -1,4 +1,8 @@
 :root {
+  --app-scrollbar-width: 6px;
+  --scrollbar-thumb: rgba(216, 222, 233, 0.12);
+  --scrollbar-thumb-hover: rgba(216, 222, 233, 0.2);
+
   color-scheme: dark;
   font:
     13px/1.45 Inter,
@@ -14,10 +18,30 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+  scrollbar-width: thin;
 }
 
 body {
   margin: 0;
+}
+
+::-webkit-scrollbar {
+  height: var(--app-scrollbar-width);
+  width: var(--app-scrollbar-width);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
 }
 
 html.is-resizing,
@@ -337,6 +361,7 @@ textarea {
   display: grid;
   grid-template-rows: 36px 38px 1fr;
   min-width: 260px;
+  width: var(--sidebar-width, 360px);
 }
 
 .sidebar-tabs {
@@ -764,6 +789,12 @@ textarea {
 
 .hunk {
   position: relative;
+  /* Skip layout/paint for hunks scrolled out of view. Without this, dragging
+     the split divider reflows the grid columns of every row in the document
+     each frame; with it, only on-screen hunks reflow. The `auto` keyword keeps
+     each hunk's real height once measured so the scrollbar doesn't jump. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
 }
 
 .hunk-header {
@@ -780,10 +811,12 @@ textarea {
 
 .split-header {
   display: grid;
+  grid-template-columns: var(--split-width, 50%) 1fr;
 }
 
 .split-row {
   display: grid;
+  grid-template-columns: var(--split-width, 50%) 1fr;
   width: 100%;
 }
 
@@ -862,27 +895,79 @@ textarea {
   background: repeating-linear-gradient(-45deg, #111720 0, #111720 8px, #141a24 8px, #141a24 10px);
 }
 
+/* Wide transparent hit zone with a thin centered line that lights up on
+   hover/active (VSCode/Cursor pattern). The line itself transitions colour and
+   thickness; the handle's position never transitions so it tracks the cursor
+   1:1 during a drag. */
 .panel-resizer {
-  background: #242a36;
+  background: transparent;
   cursor: col-resize;
-  flex: 0 0 7px;
-  width: 7px;
-}
-
-.panel-resizer:hover {
-  background: #3a465b;
-}
-
-.resize-slider {
-  background: rgba(76, 91, 116, 0.42);
-  bottom: 0;
-  cursor: col-resize;
-  position: absolute;
-  top: 30px;
-  width: 7px;
+  flex: 0 0 9px;
+  position: relative;
+  touch-action: none;
+  width: 9px;
   z-index: 3;
 }
 
-.resize-slider:hover {
+.panel-resizer::before {
+  background: #242a36;
+  bottom: 0;
+  content: "";
+  left: 50%;
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  transition:
+    background-color 140ms ease,
+    width 140ms ease;
+  width: 1px;
+}
+
+.panel-resizer:hover::before {
+  background: #3a465b;
+  width: 3px;
+}
+
+.panel-resizer:active::before,
+html.is-resizing .panel-resizer::before {
+  background: #5b82c4;
+  width: 3px;
+}
+
+.resize-slider {
+  background: transparent;
+  bottom: 0;
+  cursor: col-resize;
+  left: var(--split-width, 50%);
+  position: absolute;
+  top: 30px;
+  touch-action: none;
+  transform: translateX(-50%);
+  width: 9px;
+  z-index: 3;
+}
+
+.resize-slider::before {
+  background: rgba(76, 91, 116, 0.42);
+  bottom: 0;
+  content: "";
+  left: 50%;
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  transition:
+    background-color 140ms ease,
+    width 140ms ease;
+  width: 1px;
+}
+
+.resize-slider:hover::before {
   background: rgba(105, 126, 160, 0.8);
+  width: 3px;
+}
+
+.resize-slider:active::before,
+html.is-resizing .resize-slider::before {
+  background: #5b82c4;
+  width: 3px;
 }

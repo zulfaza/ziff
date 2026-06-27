@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -14,21 +15,43 @@ const execFileAsync = promisify(execFile);
 let mainWindow: BrowserWindow | null = null;
 let repoPath: string | null = null;
 
+interface WindowSize {
+  height: number;
+  width: number;
+}
+
 interface AppSettings {
   lastRepoPath: string | null;
+  windowSize: WindowSize | null;
 }
 
 void app.whenReady().then(async () => {
+  const settings = await readSettings();
+  const iconPath = getIconPath();
+  const windowSize = settings.windowSize ?? getDefaultWindowSize();
+
+  const dock = app.dock;
+  if (process.platform === "darwin" && dock != null) {
+    dock.setIcon(iconPath);
+  }
+
   mainWindow = new BrowserWindow({
     backgroundColor: "#11151d",
-    minHeight: 720,
-    minWidth: 1040,
+    height: windowSize.height,
+    icon: iconPath,
+    minHeight: getMinWindowSize().height,
+    minWidth: getMinWindowSize().width,
     titleBarStyle: "hiddenInset",
+    width: windowSize.width,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: join(__dirname, "preload.js"),
     },
+  });
+
+  mainWindow.on("close", () => {
+    void rememberWindowSize(mainWindow);
   });
 
   if (process.env.VITE_DEV_SERVER_URL != null) {
@@ -43,6 +66,23 @@ app.on("window-all-closed", () => {
     app.quit();
   }
 });
+
+function getIconPath(): string {
+  const packagedIcon = join(__dirname, "../dist/icon-512.png");
+  if (existsSync(packagedIcon)) {
+    return packagedIcon;
+  }
+
+  return join(app.getAppPath(), "public/icon-512.png");
+}
+
+function getDefaultWindowSize(): WindowSize {
+  return { height: 900, width: 1440 };
+}
+
+function getMinWindowSize(): WindowSize {
+  return { height: 720, width: 1040 };
+}
 
 ipcMain.handle("repo:choose", async (): Promise<RepoSnapshot | null> => {
   const settings = await readSettings();
@@ -213,7 +253,22 @@ async function restoreRepoPath(): Promise<void> {
 
 async function rememberRepoPath(path: string): Promise<void> {
   try {
-    await writeSettings({ lastRepoPath: path });
+    const settings = await readSettings();
+    await writeSettings({ ...settings, lastRepoPath: path });
+  } catch {
+    return;
+  }
+}
+
+async function rememberWindowSize(window: BrowserWindow | null): Promise<void> {
+  if (window == null || window.isDestroyed()) {
+    return;
+  }
+
+  const [width, height] = window.getSize();
+  try {
+    const settings = await readSettings();
+    await writeSettings({ ...settings, windowSize: normalizeWindowSize({ height, width }) });
   } catch {
     return;
   }
@@ -224,7 +279,7 @@ async function readSettings(): Promise<AppSettings> {
     const raw = await readFile(getSettingsPath(), "utf8");
     return parseSettings(JSON.parse(raw));
   } catch {
-    return { lastRepoPath: null };
+    return { lastRepoPath: null, windowSize: null };
   }
 }
 
@@ -244,14 +299,39 @@ function parseSettings(value: unknown): AppSettings {
     value == null ||
     !("lastRepoPath" in value)
   ) {
-    return { lastRepoPath: null };
+    return { lastRepoPath: null, windowSize: null };
   }
+
+  const windowSize = "windowSize" in value ? parseWindowSize(value.windowSize) : null;
 
   if (typeof value.lastRepoPath === "string" && value.lastRepoPath.length > 0) {
-    return { lastRepoPath: value.lastRepoPath };
+    return { lastRepoPath: value.lastRepoPath, windowSize };
   }
 
-  return { lastRepoPath: null };
+  return { lastRepoPath: null, windowSize };
+}
+
+function parseWindowSize(value: unknown): WindowSize | null {
+  if (
+    typeof value !== "object" ||
+    value == null ||
+    !("height" in value) ||
+    !("width" in value) ||
+    typeof value.height !== "number" ||
+    typeof value.width !== "number"
+  ) {
+    return null;
+  }
+
+  return normalizeWindowSize({ height: value.height, width: value.width });
+}
+
+function normalizeWindowSize(size: WindowSize): WindowSize {
+  const min = getMinWindowSize();
+  return {
+    height: Math.max(min.height, Math.round(size.height)),
+    width: Math.max(min.width, Math.round(size.width)),
+  };
 }
 
 function requireRepoPath(): string {

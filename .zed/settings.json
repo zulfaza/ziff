@@ -1,0 +1,47 @@
+{
+  "tab_size": 2,
+  "hard_tabs": false,
+  "remove_trailing_whitespace_on_save": true,
+  "file_scan_exclusions": [
+    "**/.git",
+    "**/.svn",
+    "**/.hg",
+    "**/.jj",
+    "**/CVS",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+    "**/.classpath",
+    "**/.settings",
+    "**/node_modules",
+    "**/dist",
+    "**/dist-electron",
+    "**/build",
+    "**/out",
+    "**/coverage",
+    "**/.cache",
+    "**/.temp",
+    "**/tmp",
+  ],
+  "languages": {
+    "TypeScript": {
+      "tab_size": 2,
+      "document_symbols": "on",
+    },
+    "TSX": {
+      "tab_size": 2,
+      "document_symbols": "on",
+    },
+    "JavaScript": {
+      "tab_size": 2,
+    },
+    "JSON": {
+      "tab_size": 2,
+    },
+    "CSS": {
+      "tab_size": 2,
+    },
+  },
+  "terminal": {
+    "working_directory": "current_project_directory",
+  },
+}
