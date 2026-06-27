@@ -1676,9 +1676,9 @@ const HunkView = memo(function HunkView({
   }
 
   return (
-    <section className="hunk split-hunk">
-      {hunk.rows.map((row, index) => (
-        <SplitRow key={`${index}-${lineKey(row)}`} row={row} />
+      <section className="hunk split-hunk">
+      {hunk.rows.map((row) => (
+        <SplitRow key={lineKey(row)} row={row} />
       ))}
       <SplitResizeHandle max={72} min={28} onResize={onResize} value={leftWidth} />
     </section>
@@ -1714,7 +1714,7 @@ function DiffHunkList({
     }
     nodes.push(
       <HunkView
-        key={`hunk-${index}-${hunk.header}`}
+        key={`hunk-${index}-${getHunkChangeKey(hunk)}`}
         hunk={hunk}
         leftWidth={leftWidth}
         mode={mode}
@@ -1725,6 +1725,11 @@ function DiffHunkList({
   });
 
   return nodes;
+}
+
+function getHunkChangeKey(hunk: DiffHunk): string {
+  const changedRow = hunk.rows.find((row) => row.kind !== "context");
+  return changedRow == null ? hunk.header : lineKey(changedRow);
 }
 
 function HunkLineInfoSeparator({
