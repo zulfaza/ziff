@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import {
@@ -8,11 +8,15 @@ import {
   parseSyntheticAddedFile,
   parseUnifiedDiff,
 } from "../src/gitDiff";
-import type { CommitRequest, FileDiff, RepoInfo, RepoSnapshot } from "../src/shared";
+import type { BranchEntry, CommitRequest, FileDiff, RepoInfo, RepoSnapshot, WorktreeEntry } from "../src/shared";
 
 const execFileAsync = promisify(execFile);
 let mainWindow: BrowserWindow | null = null;
 let repoPath: string | null = null;
+
+interface AppSettings {
+  lastRepoPath: string | null;
+}
 
 void app.whenReady().then(async () => {
   mainWindow = new BrowserWindow({
@@ -30,7 +34,7 @@ void app.whenReady().then(async () => {
   if (process.env.VITE_DEV_SERVER_URL != null) {
     await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    await mainWindow.loadFile(join(__dirname, "../../dist/index.html"));
+    await mainWindow.loadFile(join(__dirname, "../dist/index.html"));
   }
 });
 
@@ -41,16 +45,23 @@ app.on("window-all-closed", () => {
 });
 
 ipcMain.handle("repo:choose", async (): Promise<RepoSnapshot | null> => {
+  const settings = await readSettings();
+  const defaultPath = repoPath ?? settings.lastRepoPath ?? undefined;
+  const options: Electron.OpenDialogOptions =
+    defaultPath == null
+      ? { properties: ["openDirectory"] }
+      : { defaultPath, properties: ["openDirectory"] };
   const result =
     mainWindow == null
-      ? await dialog.showOpenDialog({ properties: ["openDirectory"] })
-      : await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
+      ? await dialog.showOpenDialog(options)
+      : await dialog.showOpenDialog(mainWindow, options);
   const selected = result.filePaths[0];
   if (result.canceled || selected == null) {
     return null;
   }
 
   repoPath = await git(selected, ["rev-parse", "--show-toplevel"]);
+  await rememberRepoPath(repoPath);
   return readSnapshot();
 });
 
@@ -99,6 +110,19 @@ ipcMain.handle("repo:stage-all", async (): Promise<RepoSnapshot> => {
   return requireSnapshot();
 });
 
+ipcMain.handle("repo:switch-branch", async (_event, branch: unknown): Promise<RepoSnapshot> => {
+  const cwd = requireRepoPath();
+  await git(cwd, ["checkout", parseName(branch)]);
+  return requireSnapshot();
+});
+
+ipcMain.handle("repo:switch-worktree", async (_event, path: unknown): Promise<RepoSnapshot> => {
+  const selectedPath = parsePath(path);
+  repoPath = await git(selectedPath, ["rev-parse", "--show-toplevel"]);
+  await rememberRepoPath(repoPath);
+  return requireSnapshot();
+});
+
 ipcMain.handle("repo:commit", async (_event, request: unknown): Promise<RepoSnapshot> => {
   const cwd = requireRepoPath();
   const parsed = parseCommitRequest(request);
@@ -120,26 +144,38 @@ async function requireSnapshot(): Promise<RepoSnapshot> {
 }
 
 async function readSnapshot(): Promise<RepoSnapshot | null> {
+  if (repoPath == null) {
+    await restoreRepoPath();
+  }
+
   const cwd = repoPath;
   if (cwd == null) {
     return null;
   }
 
-  const [branch, root, status, stagedNumStat, unstagedNumStat] = await Promise.all([
+  const [branch, root, worktreeList, branchList, status, stagedNumStat, unstagedNumStat, untrackedFiles] = await Promise.all([
     git(cwd, ["branch", "--show-current"]),
     git(cwd, ["rev-parse", "--show-toplevel"]),
+    git(cwd, ["worktree", "list", "--porcelain"]),
+    git(cwd, ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(authorname)%09%(committerdate:relative)%09%(subject)", "refs/heads"]),
     git(cwd, ["status", "--porcelain=v1", "-z"]),
     git(cwd, ["diff", "--cached", "--numstat"]),
     git(cwd, ["diff", "--numstat"]),
+    git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]),
   ]);
+  const currentBranch = branch.length > 0 ? branch : "HEAD";
   const info: RepoInfo = {
-    branch: branch.length > 0 ? branch : "HEAD",
+    branch: currentBranch,
     path: root,
+    projectName: basename(root),
+    worktree: getWorktreeName(root, worktreeList),
+    worktrees: parseWorktrees(root, worktreeList),
+    branches: parseBranches(currentBranch, branchList),
   };
 
   return {
     info,
-    files: buildFileEntries(status, stagedNumStat, unstagedNumStat),
+    files: buildFileEntries(status, stagedNumStat, unstagedNumStat, untrackedFiles),
   };
 }
 
@@ -162,6 +198,62 @@ async function gitAllowFailure(cwd: string, args: readonly string[]): Promise<st
   }
 }
 
+async function restoreRepoPath(): Promise<void> {
+  const settings = await readSettings();
+  if (settings.lastRepoPath == null) {
+    return;
+  }
+
+  try {
+    repoPath = await git(settings.lastRepoPath, ["rev-parse", "--show-toplevel"]);
+  } catch {
+    repoPath = null;
+  }
+}
+
+async function rememberRepoPath(path: string): Promise<void> {
+  try {
+    await writeSettings({ lastRepoPath: path });
+  } catch {
+    return;
+  }
+}
+
+async function readSettings(): Promise<AppSettings> {
+  try {
+    const raw = await readFile(getSettingsPath(), "utf8");
+    return parseSettings(JSON.parse(raw));
+  } catch {
+    return { lastRepoPath: null };
+  }
+}
+
+async function writeSettings(settings: AppSettings): Promise<void> {
+  const path = getSettingsPath();
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(settings, null, 2), "utf8");
+}
+
+function getSettingsPath(): string {
+  return join(app.getPath("userData"), "settings.json");
+}
+
+function parseSettings(value: unknown): AppSettings {
+  if (
+    typeof value !== "object" ||
+    value == null ||
+    !("lastRepoPath" in value)
+  ) {
+    return { lastRepoPath: null };
+  }
+
+  if (typeof value.lastRepoPath === "string" && value.lastRepoPath.length > 0) {
+    return { lastRepoPath: value.lastRepoPath };
+  }
+
+  return { lastRepoPath: null };
+}
+
 function requireRepoPath(): string {
   if (repoPath == null) {
     throw new Error("No repo selected");
@@ -176,6 +268,13 @@ function parsePath(value: unknown): string {
   return value;
 }
 
+function parseName(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Expected name");
+  }
+  return value.trim();
+}
+
 function parseCommitRequest(value: unknown): CommitRequest {
   if (
     typeof value !== "object" ||
@@ -187,6 +286,68 @@ function parseCommitRequest(value: unknown): CommitRequest {
     throw new Error("Expected commit message");
   }
   return { message: value.message.trim() };
+}
+
+function getWorktreeName(root: string, output: string): string {
+  const worktrees = parseWorktrees(root, output);
+  const current = worktrees.find((worktree) => worktree.isCurrent);
+  if (current == null) {
+    return "main";
+  }
+  return current.name;
+}
+
+function parseWorktrees(root: string, output: string): readonly WorktreeEntry[] {
+  const blocks = output.split("\n\n").filter((block) => block.trim().length > 0);
+  const paths = blocks
+    .map((block) => block.split("\n").find((line) => line.startsWith("worktree ")))
+    .filter(isString)
+    .map((line) => line.slice("worktree ".length));
+  const primary = paths[0];
+
+  return blocks.flatMap((block): readonly WorktreeEntry[] => {
+    const lines = block.split("\n");
+    const pathLine = lines.find((line) => line.startsWith("worktree "));
+    if (pathLine == null) {
+      return [];
+    }
+    const path = pathLine.slice("worktree ".length);
+    const headLine = lines.find((line) => line.startsWith("HEAD "));
+    const branchLine = lines.find((line) => line.startsWith("branch "));
+    const branch = branchLine == null ? "HEAD" : branchLine.slice("branch ".length).replace(/^refs\/heads\//, "");
+    const head = headLine == null ? "" : headLine.slice("HEAD ".length);
+    return [{
+      branch,
+      isCurrent: path === root,
+      name: path === primary ? "main" : basename(path),
+      path,
+      shortHead: head.slice(0, 7),
+    }];
+  });
+}
+
+function parseBranches(currentBranch: string, output: string): readonly BranchEntry[] {
+  return output
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line): BranchEntry => {
+      const fields = line.split("\t");
+      const name = fields[0] ?? "";
+      const author = fields[1] ?? "";
+      const relativeTime = fields[2] ?? "";
+      const subject = fields.slice(3).join("\t");
+      return {
+        author,
+        isCurrent: name === currentBranch,
+        name,
+        relativeTime,
+        subject,
+      };
+    });
+}
+
+function isString(value: string | undefined): value is string {
+  return value != null;
 }
 
 function isExecError(value: unknown): value is { stdout: unknown } {

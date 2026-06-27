@@ -14,6 +14,26 @@ export interface GitFileEntry {
 export interface RepoInfo {
   branch: string;
   path: string;
+  projectName: string;
+  worktree: string;
+  worktrees: readonly WorktreeEntry[];
+  branches: readonly BranchEntry[];
+}
+
+export interface WorktreeEntry {
+  branch: string;
+  isCurrent: boolean;
+  name: string;
+  path: string;
+  shortHead: string;
+}
+
+export interface BranchEntry {
+  author: string;
+  isCurrent: boolean;
+  name: string;
+  relativeTime: string;
+  subject: string;
 }
 
 export interface RepoSnapshot {
@@ -73,5 +93,7 @@ export interface ZiffApi {
   refresh(): Promise<RepoSnapshot | null>;
   stage(path: string): Promise<RepoSnapshot>;
   stageAll(): Promise<RepoSnapshot>;
+  switchBranch(branch: string): Promise<RepoSnapshot>;
+  switchWorktree(path: string): Promise<RepoSnapshot>;
   unstage(path: string): Promise<RepoSnapshot>;
 }

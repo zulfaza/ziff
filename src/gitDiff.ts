@@ -48,9 +48,10 @@ export function parsePorcelainStatus(output: string): readonly PorcelainEntry[] 
 
     const x = record[0] ?? " ";
     const y = record[1] ?? " ";
-    const path = record.slice(3);
+    const path = normalizePorcelainPath(record.slice(3));
     if (x === "R" || x === "C") {
-      const previousPath = records[index + 1] ?? null;
+      const previousRecord = records[index + 1] ?? null;
+      const previousPath = previousRecord == null ? null : normalizePorcelainPath(previousRecord);
       entries.push({ path, previousPath, x, y });
       index += 2;
     } else {
@@ -60,6 +61,14 @@ export function parsePorcelainStatus(output: string): readonly PorcelainEntry[] 
   }
 
   return entries;
+}
+
+function normalizePorcelainPath(path: string): string {
+  let end = path.length;
+  while (end > 0 && path[end - 1] === "/") {
+    end -= 1;
+  }
+  return path.slice(0, end);
 }
 
 export function parseNumStat(output: string): ReadonlyMap<string, LineStat> {
@@ -88,24 +97,47 @@ export function parseNumStat(output: string): ReadonlyMap<string, LineStat> {
 export function buildFileEntries(
   statusOutput: string,
   stagedNumStat: string,
-  unstagedNumStat: string
+  unstagedNumStat: string,
+  untrackedFilesOutput = ""
 ): readonly GitFileEntry[] {
   const stagedStats = parseNumStat(stagedNumStat);
   const unstagedStats = parseNumStat(unstagedNumStat);
+  const untrackedFiles = parseUntrackedFiles(untrackedFilesOutput);
 
-  return parsePorcelainStatus(statusOutput).map((entry) => {
-    const areas = getChangeAreas(entry);
-    const staged = stagedStats.get(entry.path);
-    const unstaged = unstagedStats.get(entry.path);
-    return {
-      path: entry.path,
-      previousPath: entry.previousPath,
-      kind: getChangeKind(entry),
-      areas,
-      added: (staged?.added ?? 0) + (unstaged?.added ?? 0),
-      deleted: (staged?.deleted ?? 0) + (unstaged?.deleted ?? 0),
-    };
+  return parsePorcelainStatus(statusOutput).flatMap((entry): readonly GitFileEntry[] => {
+    if (entry.x === "?" && entry.y === "?") {
+      const children = untrackedFiles.filter((path) => path.startsWith(`${entry.path}/`));
+      if (children.length > 0) {
+        return children.map((path) => buildFileEntry({ ...entry, path }, stagedStats, unstagedStats));
+      }
+    }
+    return [buildFileEntry(entry, stagedStats, unstagedStats)];
   });
+}
+
+function buildFileEntry(
+  entry: PorcelainEntry,
+  stagedStats: ReadonlyMap<string, LineStat>,
+  unstagedStats: ReadonlyMap<string, LineStat>
+): GitFileEntry {
+  const areas = getChangeAreas(entry);
+  const staged = stagedStats.get(entry.path);
+  const unstaged = unstagedStats.get(entry.path);
+  return {
+    path: entry.path,
+    previousPath: entry.previousPath,
+    kind: getChangeKind(entry),
+    areas,
+    added: (staged?.added ?? 0) + (unstaged?.added ?? 0),
+    deleted: (staged?.deleted ?? 0) + (unstaged?.deleted ?? 0),
+  };
+}
+
+function parseUntrackedFiles(output: string): readonly string[] {
+  return output
+    .split("\0")
+    .filter((path) => path.length > 0)
+    .map(normalizePorcelainPath);
 }
 
 export function parseUnifiedDiff(path: string, patch: string): FileDiff {

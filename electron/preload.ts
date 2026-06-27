@@ -10,6 +10,8 @@ const api: ZiffApi = {
   refresh: () => ipcRenderer.invoke("repo:refresh"),
   stage: (path: string) => ipcRenderer.invoke("repo:stage", path),
   stageAll: () => ipcRenderer.invoke("repo:stage-all"),
+  switchBranch: (branch: string) => ipcRenderer.invoke("repo:switch-branch", branch),
+  switchWorktree: (path: string) => ipcRenderer.invoke("repo:switch-worktree", path),
   unstage: (path: string) => ipcRenderer.invoke("repo:unstage", path),
 };
 

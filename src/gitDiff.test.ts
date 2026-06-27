@@ -4,7 +4,7 @@ import { buildFileEntries, parseUnifiedDiff } from "./gitDiff";
 
 test("buildFileEntries models staged, unstaged, and untracked areas", () => {
   const entries = buildFileEntries(
-    "M  staged.ts\0 M unstaged.ts\0?? new.ts\0",
+    "M  staged.ts\0 M unstaged.ts\0?? new.ts\0?? .zed/\0",
     "3\t1\tstaged.ts\n",
     "5\t2\tunstaged.ts\n"
   );
@@ -28,6 +28,42 @@ test("buildFileEntries models staged, unstaged, and untracked areas", () => {
     },
     {
       path: "new.ts",
+      previousPath: null,
+      kind: "untracked",
+      areas: ["untracked"],
+      added: 0,
+      deleted: 0,
+    },
+    {
+      path: ".zed",
+      previousPath: null,
+      kind: "untracked",
+      areas: ["untracked"],
+      added: 0,
+      deleted: 0,
+    },
+  ]);
+});
+
+test("buildFileEntries expands untracked directories", () => {
+  const entries = buildFileEntries(
+    "?? .zed/\0",
+    "",
+    "",
+    ".zed/settings.json\0.zed/tasks.json\0"
+  );
+
+  assert.deepEqual(entries, [
+    {
+      path: ".zed/settings.json",
+      previousPath: null,
+      kind: "untracked",
+      areas: ["untracked"],
+      added: 0,
+      deleted: 0,
+    },
+    {
+      path: ".zed/tasks.json",
       previousPath: null,
       kind: "untracked",
       areas: ["untracked"],
