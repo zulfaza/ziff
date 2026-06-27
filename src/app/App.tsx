@@ -285,11 +285,6 @@ export function App() {
       next.set(path, contextLines);
       return next;
     });
-    setDiffPreviews((current) =>
-      current.map((item) =>
-        item.file.path === path ? { type: "loading", file: item.file } : item,
-      ),
-    );
     void window.ziff
       .getDiff({ path, comparison, contextLines })
       .then((diff) => {

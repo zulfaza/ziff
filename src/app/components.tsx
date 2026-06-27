@@ -1368,6 +1368,11 @@ export function DiffPreviewList({
   selectedPath: string | null;
 }) {
   const previewRefs = useRef(new Map<string, HTMLElement>());
+  const scrollAnchorRef = useRef<{
+    element: HTMLElement;
+    scrollContainer: HTMLElement;
+    top: number;
+  } | null>(null);
 
   function togglePreview(path: string, isCollapsed: boolean) {
     onTogglePreview(path);
@@ -1381,6 +1386,16 @@ export function DiffPreviewList({
     });
   }
 
+  useLayoutEffect(() => {
+    const anchor = scrollAnchorRef.current;
+    if (anchor == null) {
+      return;
+    }
+
+    scrollAnchorRef.current = null;
+    anchor.scrollContainer.scrollTop += anchor.element.getBoundingClientRect().top - anchor.top;
+  }, [previews]);
+
   useEffect(() => {
     if (selectedPath == null) {
       return;
@@ -1388,7 +1403,19 @@ export function DiffPreviewList({
 
     const selectedPreview = previewRefs.current.get(selectedPath);
     selectedPreview?.scrollIntoView({ block: "start", inline: "nearest" });
-  }, [selectedPath, previews]);
+  }, [selectedPath]);
+
+  function expandContext(path: string, anchorElement: HTMLElement) {
+    const scrollContainer = anchorElement.closest(".diff-body");
+    if (scrollContainer instanceof HTMLElement) {
+      scrollAnchorRef.current = {
+        element: anchorElement,
+        scrollContainer,
+        top: anchorElement.getBoundingClientRect().top,
+      };
+    }
+    onExpandContext(path);
+  }
 
   if (previews.length === 0) {
     return <section className="diff-empty">No changes</section>;
@@ -1456,7 +1483,7 @@ export function DiffPreviewList({
                 diffPreview={preview}
                 leftWidth={leftWidth}
                 mode={mode}
-                onExpandContext={() => onExpandContext(preview.file.path)}
+                onExpandContext={(anchorElement) => expandContext(preview.file.path, anchorElement)}
                 onResize={onResize}
               />
             )}
@@ -1483,7 +1510,7 @@ function DiffView({
   diffPreview: DiffPreview;
   leftWidth: number;
   mode: ViewMode;
-  onExpandContext(): void;
+  onExpandContext(anchorElement: HTMLElement): void;
   onResize(width: number): void;
 }) {
   const [renderMode, setRenderMode] = useState<FileRenderMode>("preview");
@@ -1668,15 +1695,11 @@ const HunkView = memo(function HunkView({
   onResize(width: number): void;
 }) {
   if (mode === "stacked") {
-    return (
-      <section className="hunk">
-        {hunk.rows.flatMap((row, index) => renderStackedRow(row, index))}
-      </section>
-    );
+    return <section className="hunk">{hunk.rows.flatMap((row) => renderStackedRow(row))}</section>;
   }
 
   return (
-      <section className="hunk split-hunk">
+    <section className="hunk split-hunk">
       {hunk.rows.map((row) => (
         <SplitRow key={lineKey(row)} row={row} />
       ))}
@@ -1695,7 +1718,7 @@ function DiffHunkList({
   hunks: readonly DiffHunk[];
   leftWidth: number;
   mode: ViewMode;
-  onExpandContext(): void;
+  onExpandContext(anchorElement: HTMLElement): void;
   onResize(width: number): void;
 }) {
   const nodes: ReactNode[] = [];
@@ -1714,7 +1737,7 @@ function DiffHunkList({
     }
     nodes.push(
       <HunkView
-        key={`hunk-${index}-${getHunkChangeKey(hunk)}`}
+        key={`hunk-${getHunkChangeKey(hunk)}`}
         hunk={hunk}
         leftWidth={leftWidth}
         mode={mode}
@@ -1737,13 +1760,13 @@ function HunkLineInfoSeparator({
   onExpandContext,
 }: {
   lineInfo: HunkLineInfo;
-  onExpandContext(): void;
+  onExpandContext(anchorElement: HTMLElement): void;
 }) {
   return (
     <section className="hunk hunk-line-info-separator">
       <button
         className="hunk-line-info"
-        onClick={onExpandContext}
+        onClick={(event) => onExpandContext(event.currentTarget)}
         title="Show more unchanged lines"
       >
         <span className="hunk-line-info-icon" aria-hidden="true">
@@ -1896,11 +1919,11 @@ function SplitRow({ row }: { row: SplitDiffRow }) {
   );
 }
 
-function renderStackedRow(row: SplitDiffRow, index: number) {
+function renderStackedRow(row: SplitDiffRow) {
   if (row.kind === "context") {
     return [
       <CodeCell
-        key={index}
+        key={lineKey(row)}
         side="both"
         tokenSide="new"
         line={row.newLine}
@@ -1912,7 +1935,7 @@ function renderStackedRow(row: SplitDiffRow, index: number) {
   if (row.kind === "delete") {
     return [
       <CodeCell
-        key={index}
+        key={lineKey(row)}
         side="both"
         tokenSide="old"
         line={row.oldLine}
@@ -1925,7 +1948,7 @@ function renderStackedRow(row: SplitDiffRow, index: number) {
   if (row.kind === "add") {
     return [
       <CodeCell
-        key={index}
+        key={lineKey(row)}
         side="both"
         tokenSide="new"
         line={row.newLine}
@@ -1937,7 +1960,7 @@ function renderStackedRow(row: SplitDiffRow, index: number) {
   }
   return [
     <CodeCell
-      key={`${index}-old`}
+      key={`${lineKey(row)}-old`}
       side="both"
       tokenSide="old"
       line={row.oldLine}
@@ -1947,7 +1970,7 @@ function renderStackedRow(row: SplitDiffRow, index: number) {
       wordFragments={getInlineFragments(row.oldText, row.newText, "old")}
     />,
     <CodeCell
-      key={`${index}-new`}
+      key={`${lineKey(row)}-new`}
       side="both"
       tokenSide="new"
       line={row.newLine}
