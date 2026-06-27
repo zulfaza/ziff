@@ -1,10 +1,20 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { CommitRequest, FileDiff, RepoSnapshot, ZiffApi } from "../src/shared";
+import type {
+  CommitRequest,
+  FileDiff,
+  RepoSnapshot,
+  SidebarSettings,
+  ZiffApi,
+} from "../src/shared";
 
 const api: ZiffApi = {
   chooseRepo: () => ipcRenderer.invoke("repo:choose"),
   commit: (request: CommitRequest) => ipcRenderer.invoke("repo:commit", request),
   getDiff: (path: string) => ipcRenderer.invoke("repo:diff", path),
+  getImagePreview: (path: string, previousPath: string | null) =>
+    ipcRenderer.invoke("repo:image-preview", path, previousPath),
+  getHistory: () => ipcRenderer.invoke("repo:history"),
+  getSettings: () => ipcRenderer.invoke("settings:get"),
   getSnapshot: () => ipcRenderer.invoke("repo:snapshot"),
   openFile: (path: string) => ipcRenderer.invoke("repo:open-file", path),
   refresh: () => ipcRenderer.invoke("repo:refresh"),
@@ -13,6 +23,8 @@ const api: ZiffApi = {
   switchBranch: (branch: string) => ipcRenderer.invoke("repo:switch-branch", branch),
   switchWorktree: (path: string) => ipcRenderer.invoke("repo:switch-worktree", path),
   unstage: (path: string) => ipcRenderer.invoke("repo:unstage", path),
+  updateSettings: (settings: Partial<SidebarSettings>) =>
+    ipcRenderer.invoke("settings:update", settings),
 };
 
 contextBridge.exposeInMainWorld("ziff", api);

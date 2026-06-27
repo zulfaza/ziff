@@ -1,9 +1,10 @@
-import { ChevronDown, ChevronRight, Columns2, RefreshCw, Rows3 } from "lucide-react";
+import { ChevronsDownUp, ChevronsUpDown, Columns2, RefreshCw, Rows3 } from "lucide-react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_SPLIT_WIDTH,
   DiffPreviewList,
-  FileTree,
+  ChangesPanel,
+  HistoryList,
   RepoHeader,
   ResizeHandle,
   Splash,
@@ -11,10 +12,9 @@ import {
 import { getTotals } from "./diffModel";
 import { resolveAppHotkey } from "./hotkeys";
 import { readRecentProjects, rememberProject } from "./recentProjects";
-import type { DiffPreview, HeaderMenu, LoadState, RecentProject } from "./types";
-import type { RepoSnapshot, ViewMode } from "../shared";
+import type { DiffPreview, HeaderMenu, LoadState, RecentProject, SidebarTab } from "./types";
+import type { CommitEntry, RepoSnapshot, SidebarSettings, ViewMode } from "../shared";
 
-const formatter = new Intl.NumberFormat("en-US");
 const minSplitWidth = 1120;
 const defaultSidebarWidth = 360;
 type WorkbenchStyle = CSSProperties & { "--sidebar-width": string };
@@ -26,19 +26,27 @@ export function App() {
   const [readPaths, setReadPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [collapsedPaths, setCollapsedPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [viewMode, setViewMode] = useState<ViewMode>("split");
-  const [allCollapsed, setAllCollapsed] = useState(false);
   const [openHeaderMenu, setOpenHeaderMenu] = useState<HeaderMenu | null>(null);
   const [sidebarVisible, setSidebarVisible] = useState(true);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>("changes");
+  const [commits, setCommits] = useState<readonly CommitEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [recentProjects, setRecentProjects] = useState<readonly RecentProject[]>(() =>
     readRecentProjects(),
   );
   const [sidebarWidth, setSidebarWidth] = useState(defaultSidebarWidth);
   const [isDiffPanelNarrow, setIsDiffPanelNarrow] = useState(false);
   const [leftWidth, setLeftWidth] = useState(DEFAULT_SPLIT_WIDTH);
+  const [sidebarSettings, setSidebarSettings] = useState<SidebarSettings>({
+    fileGroupBy: "status",
+    fileListView: "tree",
+  });
   const diffPanelRef = useRef<HTMLElement | null>(null);
   const snapshot = loadState.type === "ready" ? loadState.snapshot : null;
-  const selectedFile = snapshot?.files.find((file) => file.path === selectedPath) ?? null;
   const totals = useMemo(() => getTotals(snapshot?.files ?? []), [snapshot]);
+  const previewPaths = useMemo(() => diffPreviews.map((preview) => preview.file.path), [diffPreviews]);
+  const allCollapsed =
+    previewPaths.length > 0 && previewPaths.every((path) => collapsedPaths.has(path));
   const effectiveViewMode: ViewMode = isDiffPanelNarrow ? "stacked" : viewMode;
 
   useEffect(() => {
@@ -51,6 +59,7 @@ export function App() {
         setSelectedPath(snapshot.files[0]?.path ?? null);
       }
     });
+    void window.ziff.getSettings().then(setSidebarSettings);
   }, []);
 
   useEffect(() => {
@@ -140,6 +149,31 @@ export function App() {
   }, [snapshot]);
 
   useEffect(() => {
+    if (snapshot == null || sidebarTab !== "history") {
+      return;
+    }
+
+    let active = true;
+    setHistoryLoading(true);
+    void window.ziff
+      .getHistory()
+      .then((nextCommits) => {
+        if (active) {
+          setCommits(nextCommits);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setHistoryLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [snapshot, sidebarTab]);
+
+  useEffect(() => {
     const panel = diffPanelRef.current;
     if (panel == null) {
       return;
@@ -196,6 +230,26 @@ export function App() {
       }
       return next;
     });
+  }
+
+  function toggleAllPreviews() {
+    setCollapsedPaths(allCollapsed ? new Set() : new Set(previewPaths));
+  }
+
+  function selectPath(path: string) {
+    setSelectedPath(path);
+    setCollapsedPaths((current) => {
+      if (!current.has(path)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.delete(path);
+      return next;
+    });
+  }
+
+  function updateSidebarSettings(patch: Partial<SidebarSettings>) {
+    void window.ziff.updateSettings(patch).then(setSidebarSettings);
   }
 
   async function chooseRepo() {
@@ -281,55 +335,67 @@ export function App() {
         </button>
       </header>
 
-      <div className="workbench" style={getWorkbenchStyle(sidebarWidth)}>
-        {sidebarVisible ? (
-          <>
-            <aside className="sidebar">
-              <section className="sidebar-tabs">
-                <button className="tab active">Changes ({loadState.snapshot.files.length})</button>
-                <button className="tab">History</button>
-              </section>
-              <section className="sidebar-actions">
-                <button className="link-button" onClick={chooseRepo}>
-                  View Diff
-                </button>
-                <span className="positive">+{formatter.format(totals.added)}</span>
-                <span className="negative">-{formatter.format(totals.deleted)}</span>
-                <button
-                  className="small-button"
-                  onClick={() => void replaceSnapshot(window.ziff.stageAll)}
-                >
-                  Stage All
-                </button>
-              </section>
-              <FileTree
-                files={loadState.snapshot.files}
-                readPaths={readPaths}
-                selectedPath={selectedPath}
-                onSelect={setSelectedPath}
-                onToggleRead={toggleRead}
-                onToggleReadMany={setManyRead}
-              />
-            </aside>
-            <ResizeHandle
-              defaultValue={defaultSidebarWidth}
-              label="Resize changes panel"
-              max={560}
-              min={260}
-              onResize={setSidebarWidth}
-              value={sidebarWidth}
+      <div
+        className={sidebarVisible ? "workbench" : "workbench sidebar-hidden"}
+        style={getWorkbenchStyle(sidebarWidth)}
+      >
+        <aside
+          aria-hidden={!sidebarVisible}
+          className={sidebarTab === "history" ? "sidebar history-active" : "sidebar"}
+          inert={!sidebarVisible}
+        >
+          <section className="sidebar-tabs">
+            <button
+              className={sidebarTab === "changes" ? "tab active" : "tab"}
+              onClick={() => setSidebarTab("changes")}
+            >
+              Changes ({loadState.snapshot.files.length})
+            </button>
+            <button
+              className={sidebarTab === "history" ? "tab active" : "tab"}
+              onClick={() => setSidebarTab("history")}
+            >
+              History
+            </button>
+          </section>
+          {sidebarTab === "changes" ? (
+            <ChangesPanel
+              files={loadState.snapshot.files}
+              fileGroupBy={sidebarSettings.fileGroupBy}
+              fileListView={sidebarSettings.fileListView}
+              readPaths={readPaths}
+              selectedPath={selectedPath}
+              totalsAdded={totals.added}
+              totalsDeleted={totals.deleted}
+              onFileGroupByChange={(fileGroupBy) => updateSidebarSettings({ fileGroupBy })}
+              onFileListViewChange={(fileListView) => updateSidebarSettings({ fileListView })}
+              onSelect={selectPath}
+              onToggleRead={toggleRead}
+              onToggleReadMany={setManyRead}
+              onViewDiff={chooseRepo}
             />
-          </>
-        ) : null}
+          ) : (
+            <HistoryList commits={commits} loading={historyLoading} />
+          )}
+        </aside>
+        <ResizeHandle
+          defaultValue={defaultSidebarWidth}
+          label="Resize changes panel"
+          max={560}
+          min={260}
+          onResize={setSidebarWidth}
+          value={sidebarWidth}
+        />
 
         <section className="diff-panel" ref={diffPanelRef}>
           <div className="diff-toolbar">
             <button
               className="icon-button"
+              disabled={previewPaths.length === 0}
               title={allCollapsed ? "Expand previews" : "Collapse previews"}
-              onClick={() => setAllCollapsed(!allCollapsed)}
+              onClick={toggleAllPreviews}
             >
-              {allCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+              {allCollapsed ? <ChevronsUpDown size={16} /> : <ChevronsDownUp size={16} />}
             </button>
             <div className="segmented" aria-label="Diff layout">
               <button
@@ -349,34 +415,17 @@ export function App() {
               </button>
             </div>
             <div className="toolbar-spacer" />
-            {selectedFile != null ? (
-              <>
-                <button
-                  className="toolbar-button"
-                  onClick={() => void replaceSnapshot(() => window.ziff.stage(selectedFile.path))}
-                >
-                  Stage
-                </button>
-                <button
-                  className="toolbar-button"
-                  onClick={() => void replaceSnapshot(() => window.ziff.unstage(selectedFile.path))}
-                >
-                  Unstage
-                </button>
-              </>
-            ) : null}
           </div>
           <DiffPreviewList
             previews={diffPreviews}
             collapsedPaths={collapsedPaths}
             readPaths={readPaths}
             selectedPath={selectedPath}
-            collapsed={allCollapsed}
             leftWidth={leftWidth}
             mode={effectiveViewMode}
             onOpenFile={(path) => void window.ziff.openFile(path)}
             onResize={setLeftWidth}
-            onSelect={setSelectedPath}
+            onSelect={selectPath}
             onTogglePreview={togglePreview}
             onToggleRead={toggleRead}
           />

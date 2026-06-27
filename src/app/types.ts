@@ -1,4 +1,6 @@
-import type { FileDiff, GitFileEntry, RepoSnapshot } from "../shared";
+import type { FileDiff, FileGroupBy, FileListView, GitFileEntry, RepoSnapshot } from "../shared";
+
+export type { FileGroupBy, FileListView };
 
 export type FileTreeNode =
   | {
@@ -28,6 +30,8 @@ export type DiffPreview =
   | { type: "error"; file: GitFileEntry; message: string };
 
 export type HeaderMenu = "project" | "worktree" | "branch";
+
+export type SidebarTab = "changes" | "history";
 
 export interface RecentProject {
   name: string;

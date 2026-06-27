@@ -2,15 +2,21 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Code2,
   FileCode2,
   Filter,
   Folder,
   FolderOpen,
   GitBranch,
   GitFork,
+  Image as ImageIcon,
   Monitor,
   Plus,
   Search,
+  SlidersHorizontal,
+  UserRound,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -31,16 +37,25 @@ import {
   getDirectory,
   getInlineFragments,
   getPrimaryArea,
-  groupFiles,
   lineKey,
   mergeSyntax,
+  organizeFiles,
 } from "./diffModel";
 import { type HighlightIndex, useDiffHighlight } from "./highlighter";
-import type { DiffPreview, FileTreeNode, HeaderMenu, RecentProject } from "./types";
+import type {
+  DiffPreview,
+  FileGroupBy,
+  FileListView,
+  FileTreeNode,
+  HeaderMenu,
+  RecentProject,
+} from "./types";
 import type {
   BranchEntry,
+  CommitEntry,
   DiffHunk,
   GitFileEntry,
+  ImagePreview,
   RepoSnapshot,
   SplitDiffRow,
   ViewMode,
@@ -48,6 +63,15 @@ import type {
 } from "../shared";
 
 type DiffBodyStyle = CSSProperties & { "--split-width": string };
+
+type FileRenderMode = "code" | "preview";
+
+type ImagePreviewState =
+  | { type: "loading" }
+  | { type: "ready"; preview: ImagePreview }
+  | { type: "error"; message: string };
+
+const formatter = new Intl.NumberFormat("en-US");
 
 export function RepoHeader({
   menu,
@@ -73,6 +97,7 @@ export function RepoHeader({
     <nav className="repo-header" aria-label="Repository">
       <HeaderSelector
         active={menu === "project"}
+        kind="project"
         label={info.projectName}
         onClick={() => onMenuChange(toggleMenu(menu, "project"))}
       >
@@ -88,6 +113,7 @@ export function RepoHeader({
       <HeaderSelector
         active={menu === "worktree"}
         icon={<GitFork size={15} />}
+        kind="meta"
         label={info.worktree}
         onClick={() => onMenuChange(toggleMenu(menu, "worktree"))}
       >
@@ -103,6 +129,7 @@ export function RepoHeader({
       <HeaderSelector
         active={menu === "branch"}
         icon={<GitBranch size={15} />}
+        kind="meta"
         label={info.branch}
         onClick={() => onMenuChange(toggleMenu(menu, "branch"))}
       >
@@ -118,20 +145,24 @@ function HeaderSelector({
   active,
   children,
   icon,
+  kind,
   label,
   onClick,
 }: {
   active: boolean;
   children: ReactNode;
   icon?: ReactNode;
+  kind: "project" | "meta";
   label: string;
   onClick(): void;
 }) {
+  const className = active ? `header-selector ${kind} active` : `header-selector ${kind}`;
   return (
     <div className="header-menu-wrap">
-      <button className={active ? "header-selector active" : "header-selector"} onClick={onClick}>
+      <button className={className} title={label} onClick={onClick}>
         {icon}
         <span>{label}</span>
+        <ChevronDown className="header-selector-chevron" size={13} />
       </button>
       {children}
     </div>
@@ -437,74 +468,274 @@ export function Splash({ label, onClick }: { label: string; onClick?: () => void
   );
 }
 
-export function FileTree({
+export function ChangesPanel({
   files,
+  fileGroupBy,
+  fileListView,
+  onFileGroupByChange,
+  onFileListViewChange,
   onToggleReadMany,
+  onViewDiff,
   readPaths,
   selectedPath,
+  totalsAdded,
+  totalsDeleted,
   onSelect,
   onToggleRead,
 }: {
   files: readonly GitFileEntry[];
+  fileGroupBy: FileGroupBy;
+  fileListView: FileListView;
+  onFileGroupByChange(groupBy: FileGroupBy): void;
+  onFileListViewChange(view: FileListView): void;
   onToggleReadMany(paths: readonly string[], read: boolean): void;
+  onViewDiff(): void;
   readPaths: ReadonlySet<string>;
   selectedPath: string | null;
+  totalsAdded: number;
+  totalsDeleted: number;
   onSelect(path: string): void;
   onToggleRead(path: string): void;
 }) {
-  const grouped = useMemo(() => groupFiles(files), [files]);
+  const groups = useMemo(
+    () => organizeFiles(files, { fileGroupBy, fileListView }),
+    [files, fileGroupBy, fileListView],
+  );
+  const [collapsedFolders, setCollapsedFolders] = useState<ReadonlySet<string>>(new Set());
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const folderPaths = useMemo(
+    () =>
+      fileListView === "tree" ? collectFolderPaths(groups.flatMap((group) => group.nodes)) : [],
+    [fileListView, groups],
+  );
+  const allCollapsed = folderPaths.length > 0 && folderPaths.every((p) => collapsedFolders.has(p));
+
+  useEffect(() => {
+    function closeSettings(event: MouseEvent) {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(".file-list-settings-wrap") != null
+      ) {
+        return;
+      }
+      setSettingsOpen(false);
+    }
+
+    if (!settingsOpen) {
+      return;
+    }
+
+    window.addEventListener("mousedown", closeSettings);
+    return () => window.removeEventListener("mousedown", closeSettings);
+  }, [settingsOpen]);
+
+  function toggleFolder(path: string) {
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setCollapsedFolders(allCollapsed ? new Set() : new Set(folderPaths));
+  }
+
   return (
-    <section className="file-list">
-      <FileGroup
-        label="Tracked"
-        nodes={grouped.tracked}
-        readPaths={readPaths}
-        selectedPath={selectedPath}
-        onSelect={onSelect}
-        onToggleRead={onToggleRead}
-        onToggleReadMany={onToggleReadMany}
-      />
-      <FileGroup
-        label="Untracked"
-        nodes={grouped.untracked}
-        readPaths={readPaths}
-        selectedPath={selectedPath}
-        onSelect={onSelect}
-        onToggleRead={onToggleRead}
-        onToggleReadMany={onToggleReadMany}
-      />
+    <>
+      <section className="sidebar-actions">
+        <button className="link-button" onClick={onViewDiff}>
+          View Diff
+        </button>
+        <span className="positive">+{formatter.format(totalsAdded)}</span>
+        <span className="negative">-{formatter.format(totalsDeleted)}</span>
+        <span className="sidebar-actions-spacer" />
+        <div className="sidebar-action-buttons">
+          <button
+            className="icon-button"
+            disabled={folderPaths.length === 0}
+            onClick={toggleAll}
+            title={allCollapsed ? "Expand all folders" : "Collapse all folders"}
+          >
+            {allCollapsed ? <ChevronsUpDown size={14} /> : <ChevronsDownUp size={14} />}
+          </button>
+          <div className="file-list-settings-wrap">
+            <button
+              className={settingsOpen ? "icon-button active" : "icon-button"}
+              onClick={() => setSettingsOpen((open) => !open)}
+              title="View settings"
+            >
+              <SlidersHorizontal size={14} />
+            </button>
+            {settingsOpen ? (
+              <FileListSettingsMenu
+                fileGroupBy={fileGroupBy}
+                fileListView={fileListView}
+                onFileGroupByChange={(groupBy) => {
+                  onFileGroupByChange(groupBy);
+                  setSettingsOpen(false);
+                }}
+                onFileListViewChange={(view) => {
+                  onFileListViewChange(view);
+                  setSettingsOpen(false);
+                }}
+              />
+            ) : null}
+          </div>
+        </div>
+      </section>
+      <section className="file-list">
+        {groups.map((group) => (
+          <FileGroup
+            key={group.label ?? "all"}
+            label={group.label}
+            files={group.files}
+            nodes={group.nodes}
+            readPaths={readPaths}
+            collapsedFolders={collapsedFolders}
+            onToggleFolder={toggleFolder}
+            selectedPath={selectedPath}
+            onSelect={onSelect}
+            onToggleRead={onToggleRead}
+            onToggleReadMany={onToggleReadMany}
+          />
+        ))}
+      </section>
+    </>
+  );
+}
+
+function FileListSettingsMenu({
+  fileGroupBy,
+  fileListView,
+  onFileGroupByChange,
+  onFileListViewChange,
+}: {
+  fileGroupBy: FileGroupBy;
+  fileListView: FileListView;
+  onFileGroupByChange(groupBy: FileGroupBy): void;
+  onFileListViewChange(view: FileListView): void;
+}) {
+  return (
+    <section className="file-list-settings-menu">
+      <div className="menu-section-title">View</div>
+      <button className="settings-menu-row" onClick={() => onFileListViewChange("list")}>
+        <span>List</span>
+        {fileListView === "list" ? <Check size={14} /> : null}
+      </button>
+      <button className="settings-menu-row" onClick={() => onFileListViewChange("tree")}>
+        <span>Tree</span>
+        {fileListView === "tree" ? <Check size={14} /> : null}
+      </button>
+      <div className="settings-menu-divider" />
+      <div className="menu-section-title">Group By</div>
+      <button className="settings-menu-row" onClick={() => onFileGroupByChange("none")}>
+        <span>None</span>
+        {fileGroupBy === "none" ? <Check size={14} /> : null}
+      </button>
+      <button className="settings-menu-row" onClick={() => onFileGroupByChange("status")}>
+        <span>Status</span>
+        {fileGroupBy === "status" ? <Check size={14} /> : null}
+      </button>
+    </section>
+  );
+}
+
+function collectFolderPaths(nodes: readonly FileTreeNode[]): string[] {
+  const paths: string[] = [];
+  for (const node of nodes) {
+    if (node.kind === "folder") {
+      paths.push(node.path);
+      paths.push(...collectFolderPaths(node.children));
+    }
+  }
+  return paths;
+}
+
+export function HistoryList({
+  commits,
+  loading,
+}: {
+  commits: readonly CommitEntry[];
+  loading: boolean;
+}) {
+  if (loading) {
+    return <section className="history-list history-empty">Loading history</section>;
+  }
+  if (commits.length === 0) {
+    return <section className="history-list history-empty">No commits</section>;
+  }
+  return (
+    <section className="history-list">
+      {commits.map((commit) => (
+        <article className="commit-row" key={commit.hash}>
+          <div className="commit-subject" title={commit.subject}>
+            {commit.subject}
+          </div>
+          <div className="commit-meta">
+            <UserRound size={14} />
+            <span className="commit-author">{commit.author}</span>
+            <span className="commit-dot">·</span>
+            <span>{commit.relativeTime}</span>
+            <span className="commit-dot">·</span>
+            <span>{commit.shortHash}</span>
+          </div>
+        </article>
+      ))}
     </section>
   );
 }
 
 function FileGroup({
   label,
+  files,
   nodes,
   onToggleReadMany,
   readPaths,
+  collapsedFolders,
+  onToggleFolder,
   selectedPath,
   onSelect,
   onToggleRead,
 }: {
-  label: string;
+  label: string | null;
+  files: readonly GitFileEntry[];
   nodes: readonly FileTreeNode[];
   onToggleReadMany(paths: readonly string[], read: boolean): void;
   readPaths: ReadonlySet<string>;
+  collapsedFolders: ReadonlySet<string>;
+  onToggleFolder(path: string): void;
   selectedPath: string | null;
   onSelect(path: string): void;
   onToggleRead(path: string): void;
 }) {
-  if (nodes.length === 0) {
+  if (files.length === 0 && nodes.length === 0) {
     return null;
   }
   return (
     <section className="file-group">
-      <div className="group-title">{label}</div>
+      {label == null ? null : <div className="group-title">{label}</div>}
+      {files.map((file) => (
+        <FileRow
+          key={file.path}
+          file={file}
+          readPaths={readPaths}
+          selectedPath={selectedPath}
+          onSelect={onSelect}
+          onToggleRead={onToggleRead}
+        />
+      ))}
       {nodes.map((node) => (
         <TreeNode
           key={node.path}
           node={node}
           readPaths={readPaths}
+          collapsedFolders={collapsedFolders}
+          onToggleFolder={onToggleFolder}
           selectedPath={selectedPath}
           onSelect={onSelect}
           onToggleRead={onToggleRead}
@@ -515,10 +746,50 @@ function FileGroup({
   );
 }
 
+function FileRow({
+  file,
+  readPaths,
+  selectedPath,
+  onSelect,
+  onToggleRead,
+}: {
+  file: GitFileEntry;
+  readPaths: ReadonlySet<string>;
+  selectedPath: string | null;
+  onSelect(path: string): void;
+  onToggleRead(path: string): void;
+}) {
+  const name = getBasename(file.path);
+  return (
+    <div
+      className={file.path === selectedPath ? "tree-row file-row selected" : "tree-row file-row"}
+      style={{ paddingLeft: 12 }}
+    >
+      <button className="tree-file-button" onClick={() => onSelect(file.path)} title={file.path}>
+        <span className={`file-change-icon ${getPrimaryArea(file.areas)}`} />
+        <span>{name}</span>
+      </button>
+      <span className="tree-stats">
+        <span className="positive">+{file.added}</span>
+        <span className="negative">-{file.deleted}</span>
+      </span>
+      <input
+        aria-label={`Mark ${file.path} read`}
+        checked={readPaths.has(file.path)}
+        className="read-check"
+        onChange={() => onToggleRead(file.path)}
+        type="checkbox"
+      />
+    </div>
+  );
+}
+
 function TreeNode({
   node,
   onToggleReadMany,
   readPaths,
+  collapsedFolders,
+  onToggleFolder,
   selectedPath,
   onSelect,
   onToggleRead,
@@ -526,12 +797,14 @@ function TreeNode({
   node: FileTreeNode;
   onToggleReadMany(paths: readonly string[], read: boolean): void;
   readPaths: ReadonlySet<string>;
+  collapsedFolders: ReadonlySet<string>;
+  onToggleFolder(path: string): void;
   selectedPath: string | null;
   onSelect(path: string): void;
   onToggleRead(path: string): void;
 }) {
-  const [open, setOpen] = useState(true);
   if (node.kind === "folder") {
+    const open = !collapsedFolders.has(node.path);
     const childPaths = collectFilePaths(node);
     const readCount = childPaths.filter((path) => readPaths.has(path)).length;
     const isChecked = childPaths.length > 0 && readCount === childPaths.length;
@@ -539,7 +812,7 @@ function TreeNode({
     return (
       <div className="tree-folder">
         <div className="tree-row folder-row" style={{ paddingLeft: 18 }}>
-          <button className="tree-folder-button" onClick={() => setOpen(!open)}>
+          <button className="tree-folder-button" onClick={() => onToggleFolder(node.path)}>
             {open ? <FolderOpen size={14} /> : <Folder size={14} />}
             <span>{node.name}</span>
           </button>
@@ -563,6 +836,8 @@ function TreeNode({
                 key={child.path}
                 node={child}
                 readPaths={readPaths}
+                collapsedFolders={collapsedFolders}
+                onToggleFolder={onToggleFolder}
                 selectedPath={selectedPath}
                 onSelect={onSelect}
                 onToggleRead={onToggleRead}
@@ -576,33 +851,19 @@ function TreeNode({
   }
 
   return (
-    <div
-      className={node.path === selectedPath ? "tree-row file-row selected" : "tree-row file-row"}
-      style={{ paddingLeft: 12 }}
-    >
-      <button className="tree-file-button" onClick={() => onSelect(node.path)} title={node.path}>
-        <span className={`file-change-icon ${getPrimaryArea(node.file.areas)}`} />
-        <span>{node.name}</span>
-      </button>
-      <span className="tree-stats">
-        <span className="positive">+{node.file.added}</span>
-        <span className="negative">-{node.file.deleted}</span>
-      </span>
-      <input
-        aria-label={`Mark ${node.path} read`}
-        checked={readPaths.has(node.path)}
-        className="read-check"
-        onChange={() => onToggleRead(node.path)}
-        type="checkbox"
-      />
-    </div>
+    <FileRow
+      file={node.file}
+      readPaths={readPaths}
+      selectedPath={selectedPath}
+      onSelect={onSelect}
+      onToggleRead={onToggleRead}
+    />
   );
 }
 
 export const DEFAULT_SPLIT_WIDTH = 50;
 
 export function DiffPreviewList({
-  collapsed,
   collapsedPaths,
   leftWidth,
   mode,
@@ -615,7 +876,6 @@ export function DiffPreviewList({
   readPaths,
   selectedPath,
 }: {
-  collapsed: boolean;
   collapsedPaths: ReadonlySet<string>;
   leftWidth: number;
   mode: ViewMode;
@@ -658,7 +918,7 @@ export function DiffPreviewList({
   return (
     <section className="diff-body" style={getDiffBodyStyle(leftWidth)}>
       {previews.map((preview) => {
-        const isCollapsed = collapsed || collapsedPaths.has(preview.file.path);
+        const isCollapsed = collapsedPaths.has(preview.file.path);
         return (
           <section
             className={
@@ -737,14 +997,26 @@ function DiffView({
 }) {
   const highlight = useDiffHighlight(diffPreview.type === "ready" ? diffPreview.diff : null);
   if (diffPreview.type === "loading") {
-    return <section className="preview-message">Loading diff</section>;
+    return (
+      <section className="hunk preview-hunk">
+        <section className="preview-message">Loading diff</section>
+      </section>
+    );
   }
   if (diffPreview.type === "error") {
-    return <section className="preview-message">{diffPreview.message}</section>;
+    return (
+      <section className="hunk preview-hunk">
+        <section className="preview-message">{diffPreview.message}</section>
+      </section>
+    );
   }
   const diff = diffPreview.diff;
   if (diff.isBinary) {
-    return <section className="preview-message">Binary file</section>;
+    return (
+      <section className="hunk preview-hunk">
+        <section className="preview-message">Binary file not shown.</section>
+      </section>
+    );
   }
   return (
     <HighlightContext.Provider value={highlight}>
@@ -790,7 +1062,6 @@ const HunkView = memo(function HunkView({
 
   return (
     <section className="hunk split-hunk">
-      <div className="hunk-header split-header">{hunk.header}</div>
       {hunk.rows.map((row, index) => (
         <SplitRow key={`${index}-${lineKey(row)}`} row={row} />
       ))}

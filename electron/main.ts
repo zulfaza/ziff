@@ -9,21 +9,43 @@ import {
   parseSyntheticAddedFile,
   parseUnifiedDiff,
 } from "../src/gitDiff";
-import type { BranchEntry, CommitRequest, FileDiff, RepoInfo, RepoSnapshot, WorktreeEntry } from "../src/shared";
+import type {
+  BranchEntry,
+  CommitEntry,
+  CommitRequest,
+  FileDiff,
+  FileGroupBy,
+  FileListView,
+  ImagePreview,
+  ImagePreviewMimeType,
+  RepoInfo,
+  RepoSnapshot,
+  SidebarSettings,
+  WorktreeEntry,
+} from "../src/shared";
 
 const execFileAsync = promisify(execFile);
 let mainWindow: BrowserWindow | null = null;
 let repoPath: string | null = null;
+
+app.setName("Ziff");
 
 interface WindowSize {
   height: number;
   width: number;
 }
 
-interface AppSettings {
+interface AppSettings extends SidebarSettings {
   lastRepoPath: string | null;
   windowSize: WindowSize | null;
 }
+
+const DEFAULT_SETTINGS: AppSettings = {
+  fileGroupBy: "status",
+  fileListView: "tree",
+  lastRepoPath: null,
+  windowSize: null,
+};
 
 void app.whenReady().then(async () => {
   const settings = await readSettings();
@@ -84,6 +106,24 @@ function getMinWindowSize(): WindowSize {
   return { height: 720, width: 1040 };
 }
 
+ipcMain.handle("settings:get", async (): Promise<SidebarSettings> => {
+  const settings = await readSettings();
+  return {
+    fileGroupBy: settings.fileGroupBy,
+    fileListView: settings.fileListView,
+  };
+});
+
+ipcMain.handle("settings:update", async (_event, patch: unknown): Promise<SidebarSettings> => {
+  const settings = await readSettings();
+  const next = { ...settings, ...parseSidebarSettingsPatch(patch) };
+  await writeSettings(next);
+  return {
+    fileGroupBy: next.fileGroupBy,
+    fileListView: next.fileListView,
+  };
+});
+
 ipcMain.handle("repo:choose", async (): Promise<RepoSnapshot | null> => {
   const settings = await readSettings();
   const defaultPath = repoPath ?? settings.lastRepoPath ?? undefined;
@@ -127,9 +167,35 @@ ipcMain.handle("repo:diff", async (_event, path: unknown): Promise<FileDiff> => 
     return parseUnifiedDiff(parsedPath, stagedPatch);
   }
 
+  const mimeType = getPreviewMimeType(parsedPath);
+  if (mimeType != null && mimeType !== "image/svg+xml") {
+    return { path: parsedPath, previousPath: null, hunks: [], isBinary: true };
+  }
+
   const absolutePath = resolve(cwd, parsedPath);
   const content = await readFile(absolutePath, "utf8");
   return parseSyntheticAddedFile(parsedPath, content);
+});
+
+ipcMain.handle(
+  "repo:image-preview",
+  async (_event, path: unknown, previousPath: unknown): Promise<ImagePreview> => {
+    const parsedPath = parsePath(path);
+    const parsedPreviousPath = parseNullablePath(previousPath);
+    const cwd = requireRepoPath();
+    return readImagePreview(cwd, parsedPath, parsedPreviousPath);
+  },
+);
+
+ipcMain.handle("repo:history", async (): Promise<readonly CommitEntry[]> => {
+  const cwd = requireRepoPath();
+  const log = await git(cwd, [
+    "log",
+    "--format=%H%x09%h%x09%an%x09%cr%x09%s",
+    "-n",
+    "200",
+  ]);
+  return parseCommits(log);
 });
 
 ipcMain.handle("repo:stage", async (_event, path: unknown): Promise<RepoSnapshot> => {
@@ -238,6 +304,128 @@ async function gitAllowFailure(cwd: string, args: readonly string[]): Promise<st
   }
 }
 
+async function gitBuffer(cwd: string, args: readonly string[]): Promise<Buffer> {
+  return new Promise((resolvePromise, reject) => {
+    execFile(
+      "git",
+      [...args],
+      {
+        cwd,
+        encoding: "buffer",
+        maxBuffer: 1024 * 1024 * 32,
+      },
+      (error, stdout) => {
+        if (error != null) {
+          reject(error);
+          return;
+        }
+        resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
+      },
+    );
+  });
+}
+
+async function readImagePreview(
+  cwd: string,
+  path: string,
+  previousPath: string | null,
+): Promise<ImagePreview> {
+  const afterMimeType = requirePreviewMimeType(path);
+  const beforePath = previousPath ?? path;
+  const beforeMimeType = getPreviewMimeType(beforePath);
+  const [unstagedPatch, stagedPatch] = await Promise.all([
+    gitAllowFailure(cwd, ["diff", "--no-ext-diff", "--", path]),
+    gitAllowFailure(cwd, ["diff", "--cached", "--no-ext-diff", "--", path]),
+  ]);
+
+  if (unstagedPatch.trim().length > 0) {
+    return {
+      after: await readOptionalWorktreeImage(cwd, path, afterMimeType),
+      before:
+        beforeMimeType == null
+          ? null
+          : await readOptionalGitImage(cwd, `:${beforePath}`, beforeMimeType),
+    };
+  }
+
+  if (stagedPatch.trim().length > 0) {
+    return {
+      after: await readOptionalGitImage(cwd, `:${path}`, afterMimeType),
+      before:
+        beforeMimeType == null
+          ? null
+          : await readOptionalGitImage(cwd, `HEAD:${beforePath}`, beforeMimeType),
+    };
+  }
+
+  return {
+    after: await readOptionalWorktreeImage(cwd, path, afterMimeType),
+    before: null,
+  };
+}
+
+async function readOptionalWorktreeImage(
+  cwd: string,
+  path: string,
+  mimeType: ImagePreviewMimeType,
+): Promise<ImagePreview["after"]> {
+  try {
+    return toImagePreviewSide(await readFile(resolve(cwd, path)), mimeType);
+  } catch {
+    return null;
+  }
+}
+
+async function readOptionalGitImage(
+  cwd: string,
+  spec: string,
+  mimeType: ImagePreviewMimeType,
+): Promise<ImagePreview["before"]> {
+  try {
+    return toImagePreviewSide(await gitBuffer(cwd, ["show", spec]), mimeType);
+  } catch {
+    return null;
+  }
+}
+
+function toImagePreviewSide(buffer: Buffer, mimeType: ImagePreviewMimeType): ImagePreview["after"] {
+  return {
+    dataUrl: `data:${mimeType};base64,${buffer.toString("base64")}`,
+    mimeType,
+  };
+}
+
+function requirePreviewMimeType(path: string): ImagePreviewMimeType {
+  const mimeType = getPreviewMimeType(path);
+  if (mimeType == null) {
+    throw new Error("Unsupported image preview type");
+  }
+  return mimeType;
+}
+
+function getPreviewMimeType(path: string): ImagePreviewMimeType | null {
+  const lowerPath = path.toLowerCase();
+  if (lowerPath.endsWith(".avif")) {
+    return "image/avif";
+  }
+  if (lowerPath.endsWith(".gif")) {
+    return "image/gif";
+  }
+  if (lowerPath.endsWith(".jpeg") || lowerPath.endsWith(".jpg")) {
+    return "image/jpeg";
+  }
+  if (lowerPath.endsWith(".png")) {
+    return "image/png";
+  }
+  if (lowerPath.endsWith(".svg")) {
+    return "image/svg+xml";
+  }
+  if (lowerPath.endsWith(".webp")) {
+    return "image/webp";
+  }
+  return null;
+}
+
 async function restoreRepoPath(): Promise<void> {
   const settings = await readSettings();
   if (settings.lastRepoPath == null) {
@@ -279,7 +467,7 @@ async function readSettings(): Promise<AppSettings> {
     const raw = await readFile(getSettingsPath(), "utf8");
     return parseSettings(JSON.parse(raw));
   } catch {
-    return { lastRepoPath: null, windowSize: null };
+    return DEFAULT_SETTINGS;
   }
 }
 
@@ -294,21 +482,57 @@ function getSettingsPath(): string {
 }
 
 function parseSettings(value: unknown): AppSettings {
-  if (
-    typeof value !== "object" ||
-    value == null ||
-    !("lastRepoPath" in value)
-  ) {
-    return { lastRepoPath: null, windowSize: null };
+  if (typeof value !== "object" || value == null) {
+    return DEFAULT_SETTINGS;
   }
 
   const windowSize = "windowSize" in value ? parseWindowSize(value.windowSize) : null;
+  const sidebar = parseSidebarSettings(value);
+  const lastRepoPath =
+    "lastRepoPath" in value &&
+    typeof value.lastRepoPath === "string" &&
+    value.lastRepoPath.length > 0
+      ? value.lastRepoPath
+      : null;
 
-  if (typeof value.lastRepoPath === "string" && value.lastRepoPath.length > 0) {
-    return { lastRepoPath: value.lastRepoPath, windowSize };
+  return { ...sidebar, lastRepoPath, windowSize };
+}
+
+function parseSidebarSettings(value: unknown): SidebarSettings {
+  if (typeof value !== "object" || value == null) {
+    return {
+      fileGroupBy: DEFAULT_SETTINGS.fileGroupBy,
+      fileListView: DEFAULT_SETTINGS.fileListView,
+    };
   }
 
-  return { lastRepoPath: null, windowSize };
+  return {
+    fileGroupBy: parseFileGroupBy("fileGroupBy" in value ? value.fileGroupBy : undefined),
+    fileListView: parseFileListView("fileListView" in value ? value.fileListView : undefined),
+  };
+}
+
+function parseSidebarSettingsPatch(value: unknown): Partial<SidebarSettings> {
+  if (typeof value !== "object" || value == null) {
+    return {};
+  }
+
+  const patch: Partial<SidebarSettings> = {};
+  if ("fileGroupBy" in value) {
+    patch.fileGroupBy = parseFileGroupBy(value.fileGroupBy);
+  }
+  if ("fileListView" in value) {
+    patch.fileListView = parseFileListView(value.fileListView);
+  }
+  return patch;
+}
+
+function parseFileGroupBy(value: unknown): FileGroupBy {
+  return value === "none" || value === "status" ? value : DEFAULT_SETTINGS.fileGroupBy;
+}
+
+function parseFileListView(value: unknown): FileListView {
+  return value === "list" || value === "tree" ? value : DEFAULT_SETTINGS.fileListView;
 }
 
 function parseWindowSize(value: unknown): WindowSize | null {
@@ -346,6 +570,13 @@ function parsePath(value: unknown): string {
     throw new Error("Expected path");
   }
   return value;
+}
+
+function parseNullablePath(value: unknown): string | null {
+  if (value == null) {
+    return null;
+  }
+  return parsePath(value);
 }
 
 function parseName(value: unknown): string {
@@ -422,6 +653,22 @@ function parseBranches(currentBranch: string, output: string): readonly BranchEn
         name,
         relativeTime,
         subject,
+      };
+    });
+}
+
+function parseCommits(output: string): readonly CommitEntry[] {
+  return output
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line): CommitEntry => {
+      const fields = line.split("\t");
+      return {
+        hash: fields[0] ?? "",
+        shortHash: fields[1] ?? "",
+        author: fields[2] ?? "",
+        relativeTime: fields[3] ?? "",
+        subject: fields.slice(4).join("\t"),
       };
     });
 }

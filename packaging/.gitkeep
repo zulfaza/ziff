@@ -1,0 +1,8 @@
+# Place platform icons here for packaged builds.
+#
+# electron-builder looks for:
+# - icon.icns (macOS)
+# - icon.ico (Windows)
+# - icons/ (Linux)
+#
+# Until these exist, packaged apps use the default Electron icon.

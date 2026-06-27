@@ -7,6 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "start": "env -u ELECTRON_RUN_AS_NODE electron .",
     "build": "tsc -p tsconfig.json && vite build",
+    "dist": "pnpm build && electron-builder --publish never",
     "test": "tsx --test src/**/*.test.ts",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
@@ -23,6 +24,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "electron": "^42.5.0",
+    "electron-builder": "^26.8.1",
     "oxfmt": "^0.56.0",
     "oxlint": "^1.71.0",
     "tsx": "^4.22.4",
@@ -35,5 +37,45 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "shiki": "^4.3.0"
+  },
+  "build": {
+    "appId": "dev.ziff.app",
+    "productName": "Ziff",
+    "artifactName": "Ziff-${version}-${arch}.${ext}",
+    "asar": true,
+    "directories": {
+      "buildResources": "packaging",
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "linux": {
+      "category": "Development",
+      "executableName": "ziff",
+      "target": [
+        "AppImage"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "releaseType": "release"
+      }
+    ]
   }
 }

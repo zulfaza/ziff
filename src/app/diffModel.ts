@@ -1,5 +1,11 @@
 import type { GitFileEntry, SplitDiffRow } from "../shared";
-import type { FileTreeNode } from "./types";
+import type { FileGroupBy, FileListView, FileTreeNode } from "./types";
+
+export interface FileGroup {
+  files: readonly GitFileEntry[];
+  label: string | null;
+  nodes: readonly FileTreeNode[];
+}
 
 export type InlineFragment = {
   text: string;
@@ -191,12 +197,51 @@ export function clamp(value: number, min: number, max: number): number {
 }
 
 export function groupFiles(files: readonly GitFileEntry[]) {
-  const tracked = files.filter((file) => !isUntracked(file));
-  const untracked = files.filter(isUntracked);
+  return organizeFiles(files, { fileGroupBy: "status", fileListView: "tree" });
+}
+
+export function organizeFiles(
+  files: readonly GitFileEntry[],
+  options: { fileGroupBy: FileGroupBy; fileListView: FileListView },
+): readonly FileGroup[] {
+  const { fileGroupBy, fileListView } = options;
+
+  if (fileGroupBy === "status") {
+    const tracked = files.filter((file) => !isUntracked(file));
+    const untracked = files.filter(isUntracked);
+    const groups: FileGroup[] = [];
+    if (tracked.length > 0) {
+      groups.push(createFileGroup("Tracked", tracked, fileListView));
+    }
+    if (untracked.length > 0) {
+      groups.push(createFileGroup("Untracked", untracked, fileListView));
+    }
+    return groups;
+  }
+
+  if (files.length === 0) {
+    return [];
+  }
+
+  return [createFileGroup(null, files, fileListView)];
+}
+
+function createFileGroup(
+  label: string | null,
+  files: readonly GitFileEntry[],
+  fileListView: FileListView,
+): FileGroup {
   return {
-    tracked: buildTree(tracked),
-    untracked: buildTree(untracked),
+    label,
+    files: fileListView === "list" ? sortFiles(files) : [],
+    nodes: fileListView === "tree" ? buildTree(files) : [],
   };
+}
+
+function sortFiles(files: readonly GitFileEntry[]): readonly GitFileEntry[] {
+  return [...files].toSorted((left, right) =>
+    left.path.localeCompare(right.path, undefined, { sensitivity: "base" }),
+  );
 }
 
 function isUntracked(file: GitFileEntry): boolean {

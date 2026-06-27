@@ -41,6 +41,14 @@ export interface RepoSnapshot {
   files: readonly GitFileEntry[];
 }
 
+export interface CommitEntry {
+  hash: string;
+  shortHash: string;
+  author: string;
+  relativeTime: string;
+  subject: string;
+}
+
 export type SplitDiffRow =
   | {
       kind: "context";
@@ -78,7 +86,34 @@ export interface FileDiff {
   isBinary: boolean;
 }
 
+export type ImagePreviewMimeType =
+  | "image/avif"
+  | "image/gif"
+  | "image/jpeg"
+  | "image/png"
+  | "image/svg+xml"
+  | "image/webp";
+
+export interface ImagePreviewSide {
+  dataUrl: string;
+  mimeType: ImagePreviewMimeType;
+}
+
+export interface ImagePreview {
+  after: ImagePreviewSide | null;
+  before: ImagePreviewSide | null;
+}
+
 export type ViewMode = "split" | "stacked";
+
+export type FileListView = "list" | "tree";
+
+export type FileGroupBy = "none" | "status";
+
+export interface SidebarSettings {
+  fileGroupBy: FileGroupBy;
+  fileListView: FileListView;
+}
 
 export interface CommitRequest {
   message: string;
@@ -88,6 +123,9 @@ export interface ZiffApi {
   chooseRepo(): Promise<RepoSnapshot | null>;
   commit(request: CommitRequest): Promise<RepoSnapshot>;
   getDiff(path: string): Promise<FileDiff>;
+  getImagePreview(path: string, previousPath: string | null): Promise<ImagePreview>;
+  getHistory(): Promise<readonly CommitEntry[]>;
+  getSettings(): Promise<SidebarSettings>;
   getSnapshot(): Promise<RepoSnapshot | null>;
   openFile(path: string): Promise<void>;
   refresh(): Promise<RepoSnapshot | null>;
@@ -96,4 +134,5 @@ export interface ZiffApi {
   switchBranch(branch: string): Promise<RepoSnapshot>;
   switchWorktree(path: string): Promise<RepoSnapshot>;
   unstage(path: string): Promise<RepoSnapshot>;
+  updateSettings(settings: Partial<SidebarSettings>): Promise<SidebarSettings>;
 }
