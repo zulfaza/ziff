@@ -1,6 +1,6 @@
 # Ziff
 
-![public/preview.png](public/preview.png)
+![public/preview.jpg](public/preview.jpg)
 
 A local Git diff viewer for reviewing changes before you commit, open a PR, or hand work to a coding agent.
 
