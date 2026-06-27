@@ -1,6 +1,6 @@
 export type ChangeKind = "added" | "deleted" | "modified" | "renamed" | "untracked";
 
-export type ChangeArea = "staged" | "unstaged" | "untracked";
+export type ChangeArea = "staged" | "unstaged" | "untracked" | "comparison";
 
 export interface GitFileEntry {
   path: string;
@@ -45,6 +45,7 @@ export interface CommitEntry {
   hash: string;
   shortHash: string;
   author: string;
+  email: string;
   relativeTime: string;
   subject: string;
 }
@@ -76,6 +77,10 @@ export type SplitDiffRow =
 
 export interface DiffHunk {
   header: string;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
   rows: readonly SplitDiffRow[];
 }
 
@@ -119,15 +124,34 @@ export interface CommitRequest {
   message: string;
 }
 
+export type DiffComparison =
+  | { type: "working-tree" }
+  | { type: "branch"; base: string; head: string }
+  | { type: "commit"; hash: string };
+
+export interface DiffRequest {
+  comparison: DiffComparison;
+  contextLines: number;
+  path: string;
+}
+
+export interface ImagePreviewRequest {
+  comparison: DiffComparison;
+  path: string;
+  previousPath: string | null;
+}
+
 export interface ZiffApi {
   chooseRepo(): Promise<RepoSnapshot | null>;
   commit(request: CommitRequest): Promise<RepoSnapshot>;
-  getDiff(path: string): Promise<FileDiff>;
-  getImagePreview(path: string, previousPath: string | null): Promise<ImagePreview>;
+  getComparison(comparison: DiffComparison): Promise<RepoSnapshot>;
+  getDiff(request: DiffRequest): Promise<FileDiff>;
+  getImagePreview(request: ImagePreviewRequest): Promise<ImagePreview>;
   getHistory(): Promise<readonly CommitEntry[]>;
   getSettings(): Promise<SidebarSettings>;
   getSnapshot(): Promise<RepoSnapshot | null>;
   openFile(path: string): Promise<void>;
+  openProjectWindow(path: string): Promise<void>;
   refresh(): Promise<RepoSnapshot | null>;
   stage(path: string): Promise<RepoSnapshot>;
   stageAll(): Promise<RepoSnapshot>;

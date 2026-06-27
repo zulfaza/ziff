@@ -5,17 +5,21 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   Code2,
+  ExternalLink,
   FileCode2,
   Filter,
   Folder,
   FolderOpen,
   GitBranch,
+  GitCommitHorizontal,
+  GitCompareArrows,
   GitFork,
-  Image as ImageIcon,
+  ImageIcon,
   Monitor,
   Plus,
   Search,
   SlidersHorizontal,
+  Trash2,
   UserRound,
 } from "lucide-react";
 import {
@@ -25,7 +29,9 @@ import {
   createContext,
   memo,
   useContext,
+  useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -53,9 +59,11 @@ import type {
 import type {
   BranchEntry,
   CommitEntry,
+  DiffComparison,
   DiffHunk,
   GitFileEntry,
   ImagePreview,
+  RepoInfo,
   RepoSnapshot,
   SplitDiffRow,
   ViewMode,
@@ -71,12 +79,295 @@ type ImagePreviewState =
   | { type: "ready"; preview: ImagePreview }
   | { type: "error"; message: string };
 
+type ImagePreviewKind = "raster" | "svg";
+
+interface RenderImagePreviewSide {
+  dataUrl: string;
+  label: "After" | "Before";
+}
+
+interface LineRange {
+  start: number;
+  end: number;
+}
+
+interface HunkLineInfo {
+  collapsedLines: number;
+  newRange: LineRange | null;
+  oldRange: LineRange | null;
+}
+
 const formatter = new Intl.NumberFormat("en-US");
+const recentBranchLimit = 8;
+
+export function ComparisonControls({
+  comparison,
+  info,
+  onChange,
+}: {
+  comparison: DiffComparison;
+  info: RepoInfo;
+  onChange(comparison: DiffComparison): void;
+}) {
+  const branchNames = useMemo(() => getBranchNames(info), [info]);
+  const branchOptions = useMemo(() => getBranchOptions(info), [info]);
+  const branchComparison: DiffComparison =
+    comparison.type === "branch"
+      ? comparison
+      : {
+          type: "branch",
+          base: getDefaultBaseBranch(branchNames, info.branch),
+          head: info.branch,
+        };
+
+  return (
+    <section className="compare-controls" aria-label="Diff comparison">
+      <div className="segmented compare-mode" aria-label="Compare mode">
+        <DelayedPopover label="Working Tree">
+          <button
+            aria-label="Working tree diff"
+            className={comparison.type === "working-tree" ? "active" : ""}
+            onClick={() => onChange({ type: "working-tree" })}
+          >
+            <FileCode2 size={15} />
+          </button>
+        </DelayedPopover>
+        <DelayedPopover label="Branch Diff">
+          <button
+            aria-label="Branch diff"
+            className={comparison.type === "branch" ? "active" : ""}
+            onClick={() => onChange(branchComparison)}
+          >
+            <GitCompareArrows size={15} />
+          </button>
+        </DelayedPopover>
+        <DelayedPopover label="Pick Commit In History">
+          <button
+            aria-label="Commit diff"
+            className={comparison.type === "commit" ? "active" : ""}
+            disabled={comparison.type !== "commit"}
+          >
+            <GitCommitHorizontal size={15} />
+          </button>
+        </DelayedPopover>
+      </div>
+      {comparison.type === "branch" ? (
+        <div className="branch-compare-controls">
+          <BranchComparePicker
+            label="Base ref"
+            branches={branchOptions}
+            currentBranch={info.branch}
+            value={comparison.base}
+            onChange={(base) => onChange({ ...comparison, base })}
+          />
+          <span className="compare-range">...</span>
+          <BranchComparePicker
+            label="Head ref"
+            branches={branchOptions}
+            currentBranch={info.branch}
+            value={comparison.head}
+            onChange={(head) => onChange({ ...comparison, head })}
+          />
+        </div>
+      ) : null}
+      {comparison.type === "commit" ? (
+        <span className="commit-compare-label" title={comparison.hash}>
+          {comparison.hash.slice(0, 7)}
+        </span>
+      ) : null}
+    </section>
+  );
+}
+
+function BranchComparePicker({
+  branches,
+  currentBranch,
+  label,
+  onChange,
+  value,
+}: {
+  branches: readonly BranchEntry[];
+  currentBranch: string;
+  label: string;
+  onChange(value: string): void;
+  value: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const trimmedQuery = deferredQuery.trim().toLowerCase();
+  const visibleBranches = useMemo(
+    () =>
+      trimmedQuery.length === 0
+        ? getRecentBranches(branches, value)
+        : branches.filter((branch) => branch.name.toLowerCase().includes(trimmedQuery)),
+    [branches, trimmedQuery, value],
+  );
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    function closePicker(event: MouseEvent) {
+      const target = event.target;
+      if (target instanceof Node && wrapRef.current?.contains(target) === true) {
+        return;
+      }
+      setOpen(false);
+      setQuery("");
+    }
+
+    window.addEventListener("mousedown", closePicker);
+    return () => window.removeEventListener("mousedown", closePicker);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    inputRef.current?.focus();
+  }, [open]);
+
+  function selectBranch(branch: string) {
+    onChange(branch);
+    setOpen(false);
+    setQuery("");
+  }
+
+  return (
+    <div className="branch-compare-picker" ref={wrapRef}>
+      <button
+        className={open ? "branch-compare-trigger active" : "branch-compare-trigger"}
+        onClick={() => setOpen((current) => !current)}
+        title={value}
+      >
+        <span className="branch-compare-label">{label}</span>
+        <GitBranch size={13} />
+        <span className="branch-compare-value">{value}</span>
+        <ChevronDown size={13} />
+      </button>
+      {open ? (
+        <section className="branch-compare-popover">
+          <label className="branch-compare-search">
+            <Search size={14} />
+            <input
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setOpen(false);
+                  setQuery("");
+                }
+                if (event.key === "Enter") {
+                  const first = visibleBranches[0];
+                  if (first != null) {
+                    event.preventDefault();
+                    selectBranch(first.name);
+                  }
+                }
+              }}
+              placeholder="Search branches..."
+              ref={inputRef}
+              value={query}
+            />
+          </label>
+          {trimmedQuery.length === 0 ? (
+            <div className="branch-compare-section-title">Recent Branches</div>
+          ) : null}
+          <div className="branch-compare-list">
+            {visibleBranches.length === 0 ? (
+              <div className="branch-compare-empty">No branches found</div>
+            ) : (
+              visibleBranches.map((branch) => (
+                <button
+                  className={
+                    branch.name === value ? "branch-compare-row active" : "branch-compare-row"
+                  }
+                  key={branch.name}
+                  onClick={() => selectBranch(branch.name)}
+                >
+                  <span className="branch-compare-row-name">{branch.name}</span>
+                  <BranchCompareBadge branch={branch} currentBranch={currentBranch} />
+                </button>
+              ))
+            )}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function BranchCompareBadge({
+  branch,
+  currentBranch,
+}: {
+  branch: BranchEntry;
+  currentBranch: string;
+}) {
+  if (branch.name === currentBranch) {
+    return <span className="branch-compare-badge">current</span>;
+  }
+  if (branch.name === "main" || branch.name === "master") {
+    return <span className="branch-compare-badge">default</span>;
+  }
+  return null;
+}
+
+function getBranchNames(info: RepoInfo): readonly string[] {
+  const names = getBranchOptions(info).map((branch) => branch.name);
+  return names.includes(info.branch) ? names : [info.branch, ...names];
+}
+
+function getBranchOptions(info: RepoInfo): readonly BranchEntry[] {
+  if (info.branches.some((branch) => branch.name === info.branch)) {
+    return info.branches;
+  }
+  return [
+    {
+      author: "",
+      isCurrent: true,
+      name: info.branch,
+      relativeTime: "",
+      subject: "",
+    },
+    ...info.branches,
+  ];
+}
+
+function getRecentBranches(
+  branches: readonly BranchEntry[],
+  selectedBranch: string,
+): readonly BranchEntry[] {
+  const recent = branches.slice(0, recentBranchLimit);
+  if (recent.some((branch) => branch.name === selectedBranch)) {
+    return recent;
+  }
+  const selected = branches.find((branch) => branch.name === selectedBranch);
+  return selected == null ? recent : [selected, ...recent.slice(0, recentBranchLimit - 1)];
+}
+
+function getDefaultBaseBranch(branches: readonly string[], currentBranch: string): string {
+  const main = branches.find((branch) => branch === "main" && branch !== currentBranch);
+  if (main != null) {
+    return main;
+  }
+  const master = branches.find((branch) => branch === "master" && branch !== currentBranch);
+  if (master != null) {
+    return master;
+  }
+  return branches.find((branch) => branch !== currentBranch) ?? currentBranch;
+}
 
 export function RepoHeader({
   menu,
   onChooseRepo,
+  onForgetProject,
   onMenuChange,
+  onOpenProjectWindow,
   onSwitchBranch,
   onSwitchProject,
   onSwitchWorktree,
@@ -85,7 +376,9 @@ export function RepoHeader({
 }: {
   menu: HeaderMenu | null;
   onChooseRepo(): void;
+  onForgetProject(path: string): void;
   onMenuChange(menu: HeaderMenu | null): void;
+  onOpenProjectWindow(path: string): void;
   onSwitchBranch(branch: string): void;
   onSwitchProject(path: string): void;
   onSwitchWorktree(path: string): void;
@@ -106,6 +399,8 @@ export function RepoHeader({
             currentPath={info.path}
             projects={recentProjects}
             onChooseRepo={onChooseRepo}
+            onForgetProject={onForgetProject}
+            onOpenProjectWindow={onOpenProjectWindow}
             onSwitchProject={onSwitchProject}
           />
         ) : null}
@@ -172,17 +467,23 @@ function HeaderSelector({
 function ProjectMenu({
   currentPath,
   onChooseRepo,
+  onForgetProject,
+  onOpenProjectWindow,
   onSwitchProject,
   projects,
 }: {
   currentPath: string;
   onChooseRepo(): void;
+  onForgetProject(path: string): void;
+  onOpenProjectWindow(path: string): void;
   onSwitchProject(path: string): void;
   projects: readonly RecentProject[];
 }) {
   const [query, setQuery] = useState("");
-  const filteredProjects = projects.filter((project) =>
-    project.name.toLowerCase().includes(query.toLowerCase()),
+  const normalizedQuery = query.toLowerCase();
+  const filteredProjects = projects.filter(
+    (project) =>
+      project.path !== currentPath && project.name.toLowerCase().includes(normalizedQuery),
   );
   return (
     <section className="header-menu project-menu">
@@ -190,19 +491,38 @@ function ProjectMenu({
       <div className="menu-section-title">Recent Projects</div>
       <div className="menu-list">
         {filteredProjects.map((project) => (
-          <button
-            className={project.path === currentPath ? "menu-row active" : "menu-row"}
-            key={project.path}
-            onClick={() => onSwitchProject(project.path)}
-          >
-            <Monitor size={17} />
-            <span className="menu-primary">{project.name}</span>
-          </button>
+          <div className="menu-row project-row" key={project.path}>
+            <button
+              className="project-row-main"
+              onClick={() => onSwitchProject(project.path)}
+              title={project.path}
+            >
+              <Monitor size={17} />
+              <span className="menu-primary">{project.name}</span>
+            </button>
+            <div className="project-row-actions">
+              <button
+                aria-label={`Open ${project.name} in new window`}
+                className="menu-action-button"
+                onClick={() => onOpenProjectWindow(project.path)}
+                title="Open in new window"
+              >
+                <ExternalLink size={15} />
+              </button>
+              <button
+                aria-label={`Remove ${project.name} from recent projects`}
+                className="menu-action-button"
+                onClick={() => onForgetProject(project.path)}
+                title="Delete"
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
+          </div>
         ))}
       </div>
       <div className="menu-footer">
         <button onClick={onChooseRepo}>Open Local Folder</button>
-        <button onClick={onChooseRepo}>Open Remote Folder</button>
       </div>
     </section>
   );
@@ -454,16 +774,48 @@ export function ResizeHandle({
   );
 }
 
-export function Splash({ label, onClick }: { label: string; onClick?: () => void }) {
+export function Splash({
+  label,
+  onClick,
+  recentProjects,
+  onOpenProject,
+}: {
+  label: string;
+  onClick?: () => void;
+  recentProjects?: readonly RecentProject[];
+  onOpenProject?: (path: string) => void;
+}) {
+  const hasRecent = recentProjects != null && recentProjects.length > 0;
   return (
     <main className="splash">
-      <div className="brand large">ziff</div>
-      <p>{label}</p>
-      {onClick == null ? null : (
-        <button className="primary-button" onClick={onClick}>
-          Open Repo
-        </button>
-      )}
+      <div className="splash-inner">
+        <img className="splash-logo" src="/icon.svg" alt="Ziff" />
+        <p>{label}</p>
+        {onClick == null ? null : (
+          <button className="primary-button" onClick={onClick}>
+            Open Repo
+          </button>
+        )}
+        {hasRecent && onOpenProject != null ? (
+          <div className="splash-recent">
+            <div className="splash-recent-title">Recent Projects</div>
+            <div className="splash-recent-list">
+              {recentProjects.map((project) => (
+                <button
+                  className="splash-recent-row"
+                  key={project.path}
+                  onClick={() => onOpenProject(project.path)}
+                  title={project.path}
+                >
+                  <Folder size={16} />
+                  <span className="splash-recent-name">{project.name}</span>
+                  <span className="splash-recent-path">{project.path}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
     </main>
   );
 }
@@ -656,12 +1008,41 @@ function collectFolderPaths(nodes: readonly FileTreeNode[]): string[] {
   return paths;
 }
 
+// GitHub noreply emails encode the user's identity: "<id>+<login>@users.noreply.github.com"
+// (or the older "<login>@users.noreply.github.com"). Derive an avatar URL from
+// either form so commits authored on GitHub show the user's profile picture.
+function getGithubAvatarUrl(email: string): string | null {
+  const match = /^(?:(\d+)\+)?([^@]+)@users\.noreply\.github\.com$/i.exec(email);
+  if (match == null) {
+    return null;
+  }
+  const id = match[1];
+  const login = match[2];
+  if (id != null) {
+    return `https://avatars.githubusercontent.com/u/${id}?s=48&v=4`;
+  }
+  return `https://github.com/${login}.png?size=48`;
+}
+
+function CommitAvatar({ email }: { email: string }) {
+  const url = getGithubAvatarUrl(email);
+  const [failed, setFailed] = useState(false);
+  if (url == null || failed) {
+    return <UserRound size={14} />;
+  }
+  return <img alt="" className="commit-avatar" onError={() => setFailed(true)} src={url} />;
+}
+
 export function HistoryList({
+  activeHash,
   commits,
   loading,
+  onSelectCommit,
 }: {
+  activeHash: string | null;
   commits: readonly CommitEntry[];
   loading: boolean;
+  onSelectCommit(hash: string): void;
 }) {
   if (loading) {
     return <section className="history-list history-empty">Loading history</section>;
@@ -672,19 +1053,23 @@ export function HistoryList({
   return (
     <section className="history-list">
       {commits.map((commit) => (
-        <article className="commit-row" key={commit.hash}>
+        <button
+          className={commit.hash === activeHash ? "commit-row active" : "commit-row"}
+          key={commit.hash}
+          onClick={() => onSelectCommit(commit.hash)}
+        >
           <div className="commit-subject" title={commit.subject}>
             {commit.subject}
           </div>
           <div className="commit-meta">
-            <UserRound size={14} />
+            <CommitAvatar email={commit.email} />
             <span className="commit-author">{commit.author}</span>
             <span className="commit-dot">·</span>
             <span>{commit.relativeTime}</span>
             <span className="commit-dot">·</span>
             <span>{commit.shortHash}</span>
           </div>
-        </article>
+        </button>
       ))}
     </section>
   );
@@ -863,11 +1248,103 @@ function TreeNode({
 
 export const DEFAULT_SPLIT_WIDTH = 50;
 
+const popoverGap = 6;
+const popoverViewportPadding = 8;
+const popoverShowDelayMs = 500;
+
+function getPopoverStyle(anchor: DOMRect, popover: DOMRect): CSSProperties {
+  const maxLeft = window.innerWidth - popover.width - popoverViewportPadding;
+  const maxTop = window.innerHeight - popover.height - popoverViewportPadding;
+
+  let top = anchor.bottom + popoverGap;
+  if (top > maxTop && anchor.top - popoverGap - popover.height >= popoverViewportPadding) {
+    top = anchor.top - popoverGap - popover.height;
+  }
+  top = Math.max(popoverViewportPadding, Math.min(top, maxTop));
+
+  let left = anchor.left + anchor.width / 2 - popover.width / 2;
+  left = Math.max(popoverViewportPadding, Math.min(left, maxLeft));
+
+  return { left, top };
+}
+
+function DelayedPopover({ children, label }: { children: ReactNode; label: string }) {
+  const wrapRef = useRef<HTMLSpanElement>(null);
+  const popoverRef = useRef<HTMLSpanElement>(null);
+  const showTimerRef = useRef<number | undefined>(undefined);
+  const [visible, setVisible] = useState(false);
+  const [popoverStyle, setPopoverStyle] = useState<CSSProperties | null>(null);
+
+  useLayoutEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    function reposition() {
+      const wrap = wrapRef.current;
+      const popover = popoverRef.current;
+      if (wrap == null || popover == null) {
+        return;
+      }
+
+      setPopoverStyle(
+        getPopoverStyle(wrap.getBoundingClientRect(), popover.getBoundingClientRect()),
+      );
+    }
+
+    reposition();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [visible]);
+
+  function showSoon() {
+    window.clearTimeout(showTimerRef.current);
+    showTimerRef.current = window.setTimeout(() => setVisible(true), popoverShowDelayMs);
+  }
+
+  function hide() {
+    window.clearTimeout(showTimerRef.current);
+    setVisible(false);
+    setPopoverStyle(null);
+  }
+
+  return (
+    <span
+      className="toolbar-button-popover-wrap"
+      onMouseEnter={showSoon}
+      onMouseLeave={hide}
+      ref={wrapRef}
+    >
+      {children}
+      {visible ? (
+        <span
+          className={
+            popoverStyle == null
+              ? "toolbar-button-popover measuring"
+              : "toolbar-button-popover visible"
+          }
+          ref={popoverRef}
+          role="tooltip"
+          style={popoverStyle ?? { left: -9999, top: -9999 }}
+        >
+          {label}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function DiffPreviewList({
   collapsedPaths,
+  comparison,
   leftWidth,
   mode,
   onOpenFile,
+  onExpandContext,
   onResize,
   onSelect,
   onTogglePreview,
@@ -877,9 +1354,11 @@ export function DiffPreviewList({
   selectedPath,
 }: {
   collapsedPaths: ReadonlySet<string>;
+  comparison: DiffComparison;
   leftWidth: number;
   mode: ViewMode;
   onOpenFile(path: string): void;
+  onExpandContext(path: string): void;
   onResize(width: number): void;
   onSelect(path: string): void;
   onTogglePreview(path: string): void;
@@ -961,15 +1440,23 @@ export function DiffPreviewList({
                 <span className="positive">+{preview.file.added}</span>
                 <span className="negative">-{preview.file.deleted}</span>
               </span>
-              <button className="toolbar-button" onClick={() => onOpenFile(preview.file.path)}>
-                Open File
-              </button>
+              <DelayedPopover label="Open File">
+                <button
+                  aria-label="Open file"
+                  className="toolbar-button toolbar-button-icon"
+                  onClick={() => onOpenFile(preview.file.path)}
+                >
+                  <ExternalLink size={14} />
+                </button>
+              </DelayedPopover>
             </header>
             {isCollapsed ? null : (
               <DiffView
+                comparison={comparison}
                 diffPreview={preview}
                 leftWidth={leftWidth}
                 mode={mode}
+                onExpandContext={() => onExpandContext(preview.file.path)}
                 onResize={onResize}
               />
             )}
@@ -985,17 +1472,26 @@ function getDiffBodyStyle(leftWidth: number): DiffBodyStyle {
 }
 
 function DiffView({
+  comparison,
   diffPreview,
   leftWidth,
   mode,
+  onExpandContext,
   onResize,
 }: {
+  comparison: DiffComparison;
   diffPreview: DiffPreview;
   leftWidth: number;
   mode: ViewMode;
+  onExpandContext(): void;
   onResize(width: number): void;
 }) {
-  const highlight = useDiffHighlight(diffPreview.type === "ready" ? diffPreview.diff : null);
+  const [renderMode, setRenderMode] = useState<FileRenderMode>("preview");
+  const readyDiff = diffPreview.type === "ready" ? diffPreview.diff : null;
+  const imageKind = readyDiff == null ? null : getImagePreviewKind(readyDiff.path);
+  const showingImagePreview =
+    readyDiff != null && imageKind != null && (imageKind === "raster" || renderMode === "preview");
+  const highlight = useDiffHighlight(showingImagePreview ? null : readyDiff);
   if (diffPreview.type === "loading") {
     return (
       <section className="hunk preview-hunk">
@@ -1011,6 +1507,23 @@ function DiffView({
     );
   }
   const diff = diffPreview.diff;
+  if (imageKind === "raster") {
+    return (
+      <ImageDiffPreview comparison={comparison} path={diff.path} previousPath={diff.previousPath} />
+    );
+  }
+  if (imageKind === "svg" && renderMode === "preview") {
+    return (
+      <>
+        <PreviewModeToggle mode={renderMode} onChange={setRenderMode} />
+        <ImageDiffPreview
+          comparison={comparison}
+          path={diff.path}
+          previousPath={diff.previousPath}
+        />
+      </>
+    );
+  }
   if (diff.isBinary) {
     return (
       <section className="hunk preview-hunk">
@@ -1019,21 +1532,124 @@ function DiffView({
     );
   }
   return (
-    <HighlightContext.Provider value={highlight}>
-      {diff.hunks.map((hunk) => (
-        <HunkView
-          key={hunk.header}
-          hunk={hunk}
+    <>
+      {imageKind === "svg" ? (
+        <PreviewModeToggle mode={renderMode} onChange={setRenderMode} />
+      ) : null}
+      <HighlightContext.Provider value={highlight}>
+        <DiffHunkList
+          hunks={diff.hunks}
           leftWidth={leftWidth}
           mode={mode}
+          onExpandContext={onExpandContext}
           onResize={onResize}
         />
-      ))}
-    </HighlightContext.Provider>
+      </HighlightContext.Provider>
+    </>
   );
 }
 
 const HighlightContext = createContext<HighlightIndex>({ getTokens: () => null });
+
+function PreviewModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: FileRenderMode;
+  onChange(mode: FileRenderMode): void;
+}) {
+  return (
+    <div className="preview-mode-row">
+      <div className="segmented" aria-label="SVG view">
+        <button
+          className={mode === "preview" ? "active" : ""}
+          onClick={() => onChange("preview")}
+          title="Preview"
+        >
+          <ImageIcon size={15} />
+        </button>
+        <button
+          className={mode === "code" ? "active" : ""}
+          onClick={() => onChange("code")}
+          title="Code"
+        >
+          <Code2 size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ImageDiffPreview({
+  comparison,
+  path,
+  previousPath,
+}: {
+  comparison: DiffComparison;
+  path: string;
+  previousPath: string | null;
+}) {
+  const [state, setState] = useState<ImagePreviewState>({ type: "loading" });
+
+  useEffect(() => {
+    let active = true;
+    setState({ type: "loading" });
+    void window.ziff
+      .getImagePreview({ path, previousPath, comparison })
+      .then((preview) => {
+        if (active) {
+          setState({ type: "ready", preview });
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setState({ type: "error", message: getErrorMessage(error) });
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [comparison, path, previousPath]);
+
+  if (state.type === "loading") {
+    return (
+      <section className="hunk preview-hunk">
+        <section className="preview-message">Loading preview</section>
+      </section>
+    );
+  }
+
+  if (state.type === "error") {
+    return (
+      <section className="hunk preview-hunk">
+        <section className="preview-message">{state.message}</section>
+      </section>
+    );
+  }
+
+  const sides = getImagePreviewSides(state.preview);
+  if (sides.length === 0) {
+    return (
+      <section className="hunk preview-hunk">
+        <section className="preview-message">Image preview unavailable.</section>
+      </section>
+    );
+  }
+
+  return (
+    <section className={sides.length > 1 ? "image-preview split" : "image-preview"}>
+      {sides.map((side) => (
+        <figure className="image-preview-side" key={side.label}>
+          <figcaption>{side.label}</figcaption>
+          <div className="image-preview-frame">
+            <img alt={`${side.label} ${path}`} src={side.dataUrl} />
+          </div>
+        </figure>
+      ))}
+    </section>
+  );
+}
 
 // Split column widths are driven by the `--split-width` CSS variable set on the
 // `.diff-body` container, so a drag updates every hunk at once without React
@@ -1054,7 +1670,6 @@ const HunkView = memo(function HunkView({
   if (mode === "stacked") {
     return (
       <section className="hunk">
-        <div className="hunk-header">{hunk.header}</div>
         {hunk.rows.flatMap((row, index) => renderStackedRow(row, index))}
       </section>
     );
@@ -1069,6 +1684,123 @@ const HunkView = memo(function HunkView({
     </section>
   );
 });
+
+function DiffHunkList({
+  hunks,
+  leftWidth,
+  mode,
+  onExpandContext,
+  onResize,
+}: {
+  hunks: readonly DiffHunk[];
+  leftWidth: number;
+  mode: ViewMode;
+  onExpandContext(): void;
+  onResize(width: number): void;
+}) {
+  const nodes: ReactNode[] = [];
+  let previous: DiffHunk | null = null;
+
+  hunks.forEach((hunk, index) => {
+    const lineInfo = getHunkLineInfo(previous, hunk);
+    if (lineInfo != null) {
+      nodes.push(
+        <HunkLineInfoSeparator
+          key={`separator-${index}`}
+          lineInfo={lineInfo}
+          onExpandContext={onExpandContext}
+        />,
+      );
+    }
+    nodes.push(
+      <HunkView
+        key={`hunk-${index}-${hunk.header}`}
+        hunk={hunk}
+        leftWidth={leftWidth}
+        mode={mode}
+        onResize={onResize}
+      />,
+    );
+    previous = hunk;
+  });
+
+  return nodes;
+}
+
+function HunkLineInfoSeparator({
+  lineInfo,
+  onExpandContext,
+}: {
+  lineInfo: HunkLineInfo;
+  onExpandContext(): void;
+}) {
+  return (
+    <section className="hunk hunk-line-info-separator">
+      <button
+        className="hunk-line-info"
+        onClick={onExpandContext}
+        title="Show more unchanged lines"
+      >
+        <span className="hunk-line-info-icon" aria-hidden="true">
+          <ChevronsUpDown size={13} />
+        </span>
+        <span className="hunk-line-info-count">
+          {formatter.format(lineInfo.collapsedLines)} unchanged{" "}
+          {lineInfo.collapsedLines === 1 ? "line" : "lines"}
+        </span>
+        <span className="hunk-line-info-range">
+          {formatHunkLineInfoRange("Old", lineInfo.oldRange)}
+        </span>
+        <span className="hunk-line-info-range">
+          {formatHunkLineInfoRange("New", lineInfo.newRange)}
+        </span>
+      </button>
+    </section>
+  );
+}
+
+function getHunkLineInfo(previous: DiffHunk | null, next: DiffHunk): HunkLineInfo | null {
+  const oldRange =
+    previous == null
+      ? getLeadingLineRange(next.oldStart)
+      : getCollapsedLineRange(previous.oldStart + previous.oldLines, next.oldStart - 1);
+  const newRange =
+    previous == null
+      ? getLeadingLineRange(next.newStart)
+      : getCollapsedLineRange(previous.newStart + previous.newLines, next.newStart - 1);
+
+  const collapsedLines = Math.max(getLineRangeLength(oldRange), getLineRangeLength(newRange));
+  if (collapsedLines === 0) {
+    return null;
+  }
+
+  return { collapsedLines, newRange, oldRange };
+}
+
+function getLeadingLineRange(nextStart: number): LineRange | null {
+  return getCollapsedLineRange(1, nextStart - 1);
+}
+
+function getCollapsedLineRange(start: number, end: number): LineRange | null {
+  if (start < 1 || end < start) {
+    return null;
+  }
+  return { start, end };
+}
+
+function getLineRangeLength(range: LineRange | null): number {
+  return range == null ? 0 : range.end - range.start + 1;
+}
+
+function formatHunkLineInfoRange(label: "New" | "Old", range: LineRange | null): string {
+  if (range == null) {
+    return `${label} -`;
+  }
+  if (range.start === range.end) {
+    return `${label} ${formatter.format(range.start)}`;
+  }
+  return `${label} ${formatter.format(range.start)}-${formatter.format(range.end)}`;
+}
 
 function SplitResizeHandle({
   max,
@@ -1266,6 +1998,42 @@ function CodeCell({
       </code>
     </div>
   );
+}
+
+function getImagePreviewSides(preview: ImagePreview): readonly RenderImagePreviewSide[] {
+  const sides: RenderImagePreviewSide[] = [];
+  if (preview.before != null) {
+    sides.push({ dataUrl: preview.before.dataUrl, label: "Before" });
+  }
+  if (preview.after != null) {
+    sides.push({ dataUrl: preview.after.dataUrl, label: "After" });
+  }
+  return sides;
+}
+
+function getImagePreviewKind(path: string): ImagePreviewKind | null {
+  const lowerPath = path.toLowerCase();
+  if (lowerPath.endsWith(".svg")) {
+    return "svg";
+  }
+  if (
+    lowerPath.endsWith(".avif") ||
+    lowerPath.endsWith(".gif") ||
+    lowerPath.endsWith(".jpeg") ||
+    lowerPath.endsWith(".jpg") ||
+    lowerPath.endsWith(".png") ||
+    lowerPath.endsWith(".webp")
+  ) {
+    return "raster";
+  }
+  return null;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "Unknown error";
 }
 
 function toggleMenu(current: HeaderMenu | null, next: HeaderMenu): HeaderMenu | null {

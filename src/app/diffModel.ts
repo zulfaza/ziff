@@ -260,7 +260,7 @@ function buildTree(files: readonly GitFileEntry[]): readonly FileTreeNode[] {
   for (const file of files) {
     insertFile(root, file.path.split("/"), file);
   }
-  return sortTree(root.children);
+  return sortTree(compactTree(root.children));
 }
 
 interface TreeFolder {
@@ -299,6 +299,27 @@ function insertFile(folder: TreeFolder, parts: readonly string[], file: GitFileE
   insertFile({ name: existing.name, path: existing.path, children: existing.children }, tail, file);
   existing.added += file.added;
   existing.deleted += file.deleted;
+}
+
+function compactTree(nodes: readonly FileTreeNode[]): FileTreeNode[] {
+  return nodes.map((node): FileTreeNode => {
+    if (node.kind === "file") {
+      return node;
+    }
+    return compactFolder(node);
+  });
+}
+
+function compactFolder(folder: Extract<FileTreeNode, { kind: "folder" }>): FileTreeNode {
+  const children = compactTree(folder.children);
+  const onlyChild = children.length === 1 ? children[0] : null;
+  if (onlyChild == null || onlyChild.kind === "file") {
+    return { ...folder, children };
+  }
+  return {
+    ...onlyChild,
+    name: `${folder.name}/${onlyChild.name}`,
+  };
 }
 
 function sortTree(nodes: readonly FileTreeNode[]): readonly FileTreeNode[] {

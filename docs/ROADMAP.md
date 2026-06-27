@@ -14,6 +14,7 @@ Ziff is a local Git diff viewer. This doc tracks what we want to build and what'
 | [Auto-sync Git state](#2-auto-sync-git-state) | `planned` | Manual refresh only today |
 | [Annotations (review & agent prompts)](#3-annotations-review--agent-prompts) | `planned` | Not started |
 | [PR review import & sync](#4-pr-review-import--sync) | `planned` | Not started |
+| [User settings](#5-user-settings) | `partial` | Sidebar prefs persist; no dedicated settings UI yet |
 
 ---
 
@@ -165,12 +166,58 @@ Depends on: [§3 Annotations](#3-annotations-review--agent-prompts) (at least lo
 
 ---
 
+### 5. User settings
+
+**Goal:** One place to configure Ziff — UI preferences, sync behavior, and integrations — with changes persisted across sessions.
+
+**Status:** `partial`
+
+#### Already shipped
+
+- [x] Persist sidebar prefs — file list view (`list` | `tree`) and group-by (`none` | `status`)
+- [x] Settings storage — `settings.json` in app userData (`electron/main.ts`)
+- [x] Inline file-list settings menu (gear popover on Changes sidebar)
+- [x] Internal persistence — last opened repo path, window size (main process only, not user-editable yet)
+
+#### Still to build
+
+- [ ] **Settings entry point** — app menu item (e.g. Ziff → Settings…) and/or header button; opens a dedicated panel or modal
+- [ ] **General**
+  - [ ] Default diff view — `split` | `stacked` (persist and apply on file open)
+  - [ ] Re-open last repo on launch — toggle for `lastRepoPath` behavior
+- [ ] **Sync** (ties to [§2 Auto-sync](#2-auto-sync-git-state))
+  - [ ] Enable / disable auto-sync
+  - [ ] Debounce interval (advanced, optional)
+- [ ] **GitHub** (ties to [§4 PR review import](#4-pr-review-import--sync))
+  - [ ] Connect via PAT or `gh auth` token
+  - [ ] Token stored in OS keychain, not plain settings.json
+  - [ ] Disconnect / rotate token
+- [ ] **Appearance** (optional v1)
+  - [ ] Theme — system | light | dark
+  - [ ] Font size for diff content (optional)
+- [ ] **API surface** — extend `SidebarSettings` → `UserSettings` in `shared.ts`; expose safe subset to renderer; keep secrets in main process only
+- [ ] **Reset** — restore defaults per section or all settings
+
+#### Acceptance criteria
+
+- User opens Settings from the app menu and changes persist after quit and relaunch.
+- Sidebar file-list prefs remain editable from the inline gear menu *or* the settings panel (single source of truth).
+- GitHub token is never written to `settings.json` in plaintext.
+- Invalid or partial settings files fall back to defaults without breaking startup.
+
+#### Notes
+
+- Current types: `SidebarSettings` in `shared.ts`; main process `AppSettings` adds `lastRepoPath` and `windowSize`.
+- Consider macOS standard Preferences window vs in-app modal — modal is fine for v1.
+- Settings for annotations export defaults can land when [§3](#3-annotations-review--agent-prompts) ships.
+
+---
+
 ## Supporting work (not core, but likely needed)
 
 | Item | Status | Notes |
 | --- | --- | --- |
 | Comparison state in `RepoSnapshot` / new API types | `planned` | Extend `shared.ts` |
-| Settings page (GitHub token, sync toggle) | `planned` | |
 | Tests for diff ref parsing | `planned` | `src/gitDiff` + new git helpers |
 
 ---
@@ -180,6 +227,7 @@ Depends on: [§3 Annotations](#3-annotations-review--agent-prompts) (at least lo
 | Date | Change |
 | --- | --- |
 | 2026-06-27 | Initial roadmap — four core features from product vision |
+| 2026-06-27 | Added [§5 User settings](#5-user-settings) — prefs, sync, GitHub, appearance |
 
 ---
 

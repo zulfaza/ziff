@@ -18,6 +18,17 @@ export function rememberProject(
   });
 }
 
+export function forgetProject(
+  path: string,
+  setRecentProjects: Dispatch<SetStateAction<readonly RecentProject[]>>,
+): void {
+  setRecentProjects((current) => {
+    const next = current.filter((project) => project.path !== path);
+    writeRecentProjects(next);
+    return next;
+  });
+}
+
 export function readRecentProjects(): readonly RecentProject[] {
   try {
     const raw = localStorage.getItem(recentProjectsKey);

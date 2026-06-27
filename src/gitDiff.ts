@@ -14,6 +14,12 @@ interface PorcelainEntry {
   y: string;
 }
 
+interface NameStatusEntry {
+  path: string;
+  previousPath: string | null;
+  status: string;
+}
+
 interface LineStat {
   added: number;
   deleted: number;
@@ -21,7 +27,11 @@ interface LineStat {
 
 interface HunkState {
   header: string;
+  oldStart: number;
+  oldLines: number;
   oldLine: number;
+  newStart: number;
+  newLines: number;
   newLine: number;
   rows: SplitDiffRow[];
   pendingDeletes: readonly PendingDelete[];
@@ -32,7 +42,7 @@ interface PendingDelete {
   text: string;
 }
 
-const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
 export function parsePorcelainStatus(output: string): readonly PorcelainEntry[] {
   const records = output.split("\0").filter((record) => record.length > 0);
@@ -98,7 +108,7 @@ export function buildFileEntries(
   statusOutput: string,
   stagedNumStat: string,
   unstagedNumStat: string,
-  untrackedFilesOutput = ""
+  untrackedFilesOutput = "",
 ): readonly GitFileEntry[] {
   const stagedStats = parseNumStat(stagedNumStat);
   const unstagedStats = parseNumStat(unstagedNumStat);
@@ -108,17 +118,69 @@ export function buildFileEntries(
     if (entry.x === "?" && entry.y === "?") {
       const children = untrackedFiles.filter((path) => path.startsWith(`${entry.path}/`));
       if (children.length > 0) {
-        return children.map((path) => buildFileEntry({ ...entry, path }, stagedStats, unstagedStats));
+        return children.map((path) =>
+          buildFileEntry({ ...entry, path }, stagedStats, unstagedStats),
+        );
       }
     }
     return [buildFileEntry(entry, stagedStats, unstagedStats)];
   });
 }
 
+export function buildComparisonFileEntries(
+  nameStatusOutput: string,
+  numStatOutput: string,
+): readonly GitFileEntry[] {
+  const stats = parseNumStat(numStatOutput);
+  return parseNameStatus(nameStatusOutput).map((entry): GitFileEntry => {
+    const stat = stats.get(entry.path);
+    return {
+      path: entry.path,
+      previousPath: entry.previousPath,
+      kind: getNameStatusChangeKind(entry.status),
+      areas: ["comparison"],
+      added: stat?.added ?? 0,
+      deleted: stat?.deleted ?? 0,
+    };
+  });
+}
+
+export function parseNameStatus(output: string): readonly NameStatusEntry[] {
+  const records = output.split("\0").filter((record) => record.length > 0);
+  const entries: NameStatusEntry[] = [];
+  let index = 0;
+
+  while (index < records.length) {
+    const status = records[index];
+    if (status == null || status.length === 0) {
+      index += 1;
+      continue;
+    }
+
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const previousPath = records[index + 1];
+      const path = records[index + 2];
+      if (previousPath != null && path != null) {
+        entries.push({ path, previousPath, status });
+      }
+      index += 3;
+      continue;
+    }
+
+    const path = records[index + 1];
+    if (path != null) {
+      entries.push({ path, previousPath: null, status });
+    }
+    index += 2;
+  }
+
+  return entries;
+}
+
 function buildFileEntry(
   entry: PorcelainEntry,
   stagedStats: ReadonlyMap<string, LineStat>,
-  unstagedStats: ReadonlyMap<string, LineStat>
+  unstagedStats: ReadonlyMap<string, LineStat>,
 ): GitFileEntry {
   const areas = getChangeAreas(entry);
   const staged = stagedStats.get(entry.path);
@@ -183,7 +245,16 @@ export function parseSyntheticAddedFile(path: string, content: string): FileDiff
   return {
     path,
     previousPath: null,
-    hunks: [{ header: "@@ -0,0 +1 @@ New file", rows }],
+    hunks: [
+      {
+        header: "@@ -0,0 +1 @@ New file",
+        oldStart: 0,
+        oldLines: 0,
+        newStart: 1,
+        newLines: rows.length,
+        rows,
+      },
+    ],
     isBinary: false,
   };
 }
@@ -219,17 +290,66 @@ function getChangeKind(entry: PorcelainEntry): ChangeKind {
   return "modified";
 }
 
+function getNameStatusChangeKind(status: string): ChangeKind {
+  const code = status[0] ?? "M";
+  if (code === "R") {
+    return "renamed";
+  }
+  if (code === "A") {
+    return "added";
+  }
+  if (code === "D") {
+    return "deleted";
+  }
+  return "modified";
+}
+
 function parseHunkHeader(header: string): HunkState {
   const match = HUNK_HEADER_PATTERN.exec(header);
-  const oldLine = match?.[1] == null ? 0 : Number.parseInt(match[1], 10);
-  const newLine = match?.[2] == null ? 0 : Number.parseInt(match[2], 10);
+  if (match == null) {
+    return {
+      header,
+      oldStart: 0,
+      oldLines: 0,
+      oldLine: 0,
+      newStart: 0,
+      newLines: 0,
+      newLine: 0,
+      rows: [],
+      pendingDeletes: [],
+    };
+  }
+  const oldStart = parseHunkHeaderNumber(match?.[1]);
+  const oldLines = parseHunkLineCount(match?.[2]);
+  const newStart = parseHunkHeaderNumber(match?.[3]);
+  const newLines = parseHunkLineCount(match?.[4]);
   return {
     header,
-    oldLine,
-    newLine,
+    oldStart,
+    oldLines,
+    oldLine: oldStart,
+    newStart,
+    newLines,
+    newLine: newStart,
     rows: [],
     pendingDeletes: [],
   };
+}
+
+function parseHunkHeaderNumber(value: string | undefined): number {
+  if (value == null) {
+    return 0;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseHunkLineCount(value: string | undefined): number {
+  if (value == null) {
+    return 1;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : 1;
 }
 
 function appendDiffLine(state: HunkState, line: string): HunkState {
@@ -244,10 +364,7 @@ function appendDiffLine(state: HunkState, line: string): HunkState {
       return {
         ...state,
         oldLine: state.oldLine + 1,
-        pendingDeletes: [
-          ...state.pendingDeletes,
-          { oldLine: state.oldLine, text },
-        ],
+        pendingDeletes: [...state.pendingDeletes, { oldLine: state.oldLine, text }],
       };
     case "+":
       return appendAddition(state, text);
@@ -306,10 +423,7 @@ function flushPendingDeletes(state: HunkState): HunkState {
 
   return {
     ...state,
-    rows: [
-      ...state.rows,
-      ...state.pendingDeletes.map(toDeleteRow),
-    ],
+    rows: [...state.rows, ...state.pendingDeletes.map(toDeleteRow)],
     pendingDeletes: [],
   };
 }
@@ -326,6 +440,10 @@ function finishHunk(state: HunkState): DiffHunk {
   const flushed = flushPendingDeletes(state);
   return {
     header: flushed.header,
+    oldStart: flushed.oldStart,
+    oldLines: flushed.oldLines,
+    newStart: flushed.newStart,
+    newLines: flushed.newLines,
     rows: flushed.rows,
   };
 }

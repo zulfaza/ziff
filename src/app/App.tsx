@@ -2,6 +2,7 @@ import { ChevronsDownUp, ChevronsUpDown, Columns2, RefreshCw, Rows3 } from "luci
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_SPLIT_WIDTH,
+  ComparisonControls,
   DiffPreviewList,
   ChangesPanel,
   HistoryList,
@@ -11,18 +12,31 @@ import {
 } from "./components";
 import { getTotals } from "./diffModel";
 import { resolveAppHotkey } from "./hotkeys";
-import { readRecentProjects, rememberProject } from "./recentProjects";
+import { forgetProject, readRecentProjects, rememberProject } from "./recentProjects";
 import type { DiffPreview, HeaderMenu, LoadState, RecentProject, SidebarTab } from "./types";
-import type { CommitEntry, RepoSnapshot, SidebarSettings, ViewMode } from "../shared";
+import type {
+  CommitEntry,
+  DiffComparison,
+  RepoSnapshot,
+  SidebarSettings,
+  ViewMode,
+} from "../shared";
 
 const minSplitWidth = 1120;
 const defaultSidebarWidth = 360;
+const defaultDiffContextLines = 3;
+const diffContextExpansionLines = 5;
+const WORKING_TREE_COMPARISON: DiffComparison = { type: "working-tree" };
 type WorkbenchStyle = CSSProperties & { "--sidebar-width": string };
 
 export function App() {
   const [loadState, setLoadState] = useState<LoadState>({ type: "loading" });
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [comparison, setComparison] = useState<DiffComparison>(WORKING_TREE_COMPARISON);
   const [diffPreviews, setDiffPreviews] = useState<readonly DiffPreview[]>([]);
+  const [diffContextLines, setDiffContextLines] = useState<ReadonlyMap<string, number>>(
+    () => new Map(),
+  );
   const [readPaths, setReadPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [collapsedPaths, setCollapsedPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [viewMode, setViewMode] = useState<ViewMode>("split");
@@ -44,22 +58,43 @@ export function App() {
   const diffPanelRef = useRef<HTMLElement | null>(null);
   const snapshot = loadState.type === "ready" ? loadState.snapshot : null;
   const totals = useMemo(() => getTotals(snapshot?.files ?? []), [snapshot]);
-  const previewPaths = useMemo(() => diffPreviews.map((preview) => preview.file.path), [diffPreviews]);
+  const previewPaths = useMemo(
+    () => diffPreviews.map((preview) => preview.file.path),
+    [diffPreviews],
+  );
   const allCollapsed =
     previewPaths.length > 0 && previewPaths.every((path) => collapsedPaths.has(path));
   const effectiveViewMode: ViewMode = isDiffPanelNarrow ? "stacked" : viewMode;
+  const restoreInitialProject = shouldRestoreInitialProject();
 
   useEffect(() => {
-    void window.ziff.getSnapshot().then((snapshot) => {
-      if (snapshot == null) {
-        setLoadState({ type: "empty" });
-      } else {
+    void window.ziff.getSnapshot().then(async (snapshot) => {
+      if (snapshot != null) {
         setLoadState({ type: "ready", snapshot });
         rememberProject(snapshot.info.projectName, snapshot.info.path, setRecentProjects);
         setSelectedPath(snapshot.files[0]?.path ?? null);
+        return;
       }
+      if (!restoreInitialProject) {
+        setLoadState({ type: "empty" });
+        return;
+      }
+      const lastProject = recentProjects[0];
+      if (lastProject != null) {
+        try {
+          const next = await window.ziff.switchWorktree(lastProject.path);
+          setLoadState({ type: "ready", snapshot: next });
+          rememberProject(next.info.projectName, next.info.path, setRecentProjects);
+          setSelectedPath(next.files[0]?.path ?? null);
+          return;
+        } catch {
+          // Fall through to empty state if the remembered project can't be opened.
+        }
+      }
+      setLoadState({ type: "empty" });
     });
     void window.ziff.getSettings().then(setSidebarSettings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -131,7 +166,11 @@ export function App() {
           return {
             type: "ready",
             file,
-            diff: await window.ziff.getDiff(file.path),
+            diff: await window.ziff.getDiff({
+              path: file.path,
+              comparison,
+              contextLines: diffContextLines.get(file.path) ?? defaultDiffContextLines,
+            }),
           };
         } catch (error) {
           return { type: "error", file, message: getErrorMessage(error) };
@@ -146,7 +185,7 @@ export function App() {
     return () => {
       active = false;
     };
-  }, [snapshot]);
+  }, [snapshot, comparison]);
 
   useEffect(() => {
     if (snapshot == null || sidebarTab !== "history") {
@@ -236,6 +275,37 @@ export function App() {
     setCollapsedPaths(allCollapsed ? new Set() : new Set(previewPaths));
   }
 
+  function expandDiffContext(path: string) {
+    const contextLines =
+      (diffContextLines.get(path) ?? defaultDiffContextLines) + diffContextExpansionLines;
+    setDiffContextLines((current) => {
+      const next = new Map(current);
+      next.set(path, contextLines);
+      return next;
+    });
+    setDiffPreviews((current) =>
+      current.map((item) => (item.file.path === path ? { type: "loading", file: item.file } : item)),
+    );
+    void window.ziff
+      .getDiff({ path, comparison, contextLines })
+      .then((diff) => {
+        setDiffPreviews((current) =>
+          current.map((item) =>
+            item.file.path === path ? { type: "ready", file: item.file, diff } : item,
+          ),
+        );
+      })
+      .catch((error: unknown) => {
+        setDiffPreviews((current) =>
+          current.map((item) =>
+            item.file.path === path
+              ? { type: "error", file: item.file, message: getErrorMessage(error) }
+              : item,
+          ),
+        );
+      });
+  }
+
   function selectPath(path: string) {
     setSelectedPath(path);
     setCollapsedPaths((current) => {
@@ -260,6 +330,7 @@ export function App() {
         setLoadState({ type: "empty" });
         return;
       }
+      setComparison(WORKING_TREE_COMPARISON);
       setLoadState({ type: "ready", snapshot: next });
       rememberProject(next.info.projectName, next.info.path, setRecentProjects);
       setSelectedPath(next.files[0]?.path ?? null);
@@ -269,7 +340,10 @@ export function App() {
   }
 
   async function refresh() {
-    const next = await window.ziff.refresh();
+    const next =
+      comparison.type === "working-tree"
+        ? await window.ziff.refresh()
+        : await window.ziff.getComparison(comparison);
     if (next == null) {
       setLoadState({ type: "empty" });
       setSelectedPath(null);
@@ -294,14 +368,43 @@ export function App() {
   async function switchWorktree(path: string) {
     setOpenHeaderMenu(null);
     const next = await window.ziff.switchWorktree(path);
+    setComparison(WORKING_TREE_COMPARISON);
     setLoadState({ type: "ready", snapshot: next });
     rememberProject(next.info.projectName, next.info.path, setRecentProjects);
     setSelectedPath(next.files[0]?.path ?? null);
   }
 
+  async function openProjectWindow(path: string) {
+    setOpenHeaderMenu(null);
+    await window.ziff.openProjectWindow(path);
+  }
+
   async function switchBranch(branch: string) {
     setOpenHeaderMenu(null);
+    setComparison(WORKING_TREE_COMPARISON);
     await replaceSnapshot(() => window.ziff.switchBranch(branch));
+  }
+
+  async function changeComparison(nextComparison: DiffComparison) {
+    setComparison(nextComparison);
+    try {
+      const next =
+        nextComparison.type === "working-tree"
+          ? await window.ziff.refresh()
+          : await window.ziff.getComparison(nextComparison);
+      if (next == null) {
+        setLoadState({ type: "empty" });
+        setSelectedPath(null);
+        return;
+      }
+      setLoadState({ type: "ready", snapshot: next });
+      rememberProject(next.info.projectName, next.info.path, setRecentProjects);
+      if (selectedPath == null || next.files.every((file) => file.path !== selectedPath)) {
+        setSelectedPath(next.files[0]?.path ?? null);
+      }
+    } catch (error) {
+      setLoadState({ type: "error", message: getErrorMessage(error) });
+    }
   }
 
   if (loadState.type === "loading") {
@@ -309,11 +412,25 @@ export function App() {
   }
 
   if (loadState.type === "empty") {
-    return <Splash label="Open a local Git repo" onClick={chooseRepo} />;
+    return (
+      <Splash
+        label="Open a local Git repo"
+        onClick={chooseRepo}
+        onOpenProject={(path) => void switchWorktree(path)}
+        recentProjects={recentProjects}
+      />
+    );
   }
 
   if (loadState.type === "error") {
-    return <Splash label={loadState.message} onClick={chooseRepo} />;
+    return (
+      <Splash
+        label={loadState.message}
+        onClick={chooseRepo}
+        onOpenProject={(path) => void switchWorktree(path)}
+        recentProjects={recentProjects}
+      />
+    );
   }
 
   return (
@@ -325,7 +442,9 @@ export function App() {
           recentProjects={recentProjects}
           snapshot={loadState.snapshot}
           onChooseRepo={() => void chooseRepo()}
+          onForgetProject={(path) => forgetProject(path, setRecentProjects)}
           onMenuChange={setOpenHeaderMenu}
+          onOpenProjectWindow={(path) => void openProjectWindow(path)}
           onSwitchBranch={(branch) => void switchBranch(branch)}
           onSwitchProject={(path) => void switchWorktree(path)}
           onSwitchWorktree={(path) => void switchWorktree(path)}
@@ -375,7 +494,12 @@ export function App() {
               onViewDiff={chooseRepo}
             />
           ) : (
-            <HistoryList commits={commits} loading={historyLoading} />
+            <HistoryList
+              activeHash={comparison.type === "commit" ? comparison.hash : null}
+              commits={commits}
+              loading={historyLoading}
+              onSelectCommit={(hash) => void changeComparison({ type: "commit", hash })}
+            />
           )}
         </aside>
         <ResizeHandle
@@ -415,15 +539,22 @@ export function App() {
               </button>
             </div>
             <div className="toolbar-spacer" />
+            <ComparisonControls
+              comparison={comparison}
+              info={loadState.snapshot.info}
+              onChange={(nextComparison) => void changeComparison(nextComparison)}
+            />
           </div>
           <DiffPreviewList
             previews={diffPreviews}
             collapsedPaths={collapsedPaths}
+            comparison={comparison}
             readPaths={readPaths}
             selectedPath={selectedPath}
             leftWidth={leftWidth}
             mode={effectiveViewMode}
             onOpenFile={(path) => void window.ziff.openFile(path)}
+            onExpandContext={expandDiffContext}
             onResize={setLeftWidth}
             onSelect={selectPath}
             onTogglePreview={togglePreview}
@@ -437,6 +568,10 @@ export function App() {
 
 function getWorkbenchStyle(sidebarWidth: number): WorkbenchStyle {
   return { "--sidebar-width": `${sidebarWidth}px` };
+}
+
+function shouldRestoreInitialProject(): boolean {
+  return new URLSearchParams(window.location.search).get("restoreProject") !== "0";
 }
 
 function getErrorMessage(error: unknown): string {
