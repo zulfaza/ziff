@@ -10,11 +10,13 @@ import {
   ResizeHandle,
   Splash,
 } from "./components";
+import { AnnotationsPanel } from "./annotationUi";
 import { getTotals } from "./diffModel";
 import { resolveAppHotkey } from "./hotkeys";
 import { forgetProject, readRecentProjects, rememberProject } from "./recentProjects";
 import type { DiffPreview, HeaderMenu, LoadState, RecentProject, SidebarTab } from "./types";
 import type {
+  Annotation,
   CommitEntry,
   DiffComparison,
   RepoSnapshot,
@@ -55,7 +57,11 @@ export function App() {
     fileGroupBy: "status",
     fileListView: "tree",
   });
+  const [annotations, setAnnotations] = useState<readonly Annotation[]>([]);
+  const [annotationsReady, setAnnotationsReady] = useState(false);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const diffPanelRef = useRef<HTMLElement | null>(null);
+  const saveAnnotationsTimerRef = useRef<number | undefined>(undefined);
   const snapshot = loadState.type === "ready" ? loadState.snapshot : null;
   const totals = useMemo(() => getTotals(snapshot?.files ?? []), [snapshot]);
   const previewPaths = useMemo(
@@ -188,6 +194,50 @@ export function App() {
   }, [snapshot, comparison]);
 
   useEffect(() => {
+    if (snapshot == null) {
+      setAnnotations([]);
+      setAnnotationsReady(false);
+      setSelectedAnnotationId(null);
+      return;
+    }
+
+    let active = true;
+    setAnnotationsReady(false);
+    void window.ziff
+      .getAnnotations({ repoPath: snapshot.info.path, comparison })
+      .then((nextAnnotations) => {
+        if (active) {
+          setAnnotations(nextAnnotations);
+          setSelectedAnnotationId(null);
+          setAnnotationsReady(true);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [snapshot, comparison]);
+
+  useEffect(() => {
+    if (!annotationsReady || snapshot == null) {
+      return;
+    }
+
+    window.clearTimeout(saveAnnotationsTimerRef.current);
+    saveAnnotationsTimerRef.current = window.setTimeout(() => {
+      void window.ziff.saveAnnotations({
+        repoPath: snapshot.info.path,
+        comparison,
+        annotations,
+      });
+    }, 250);
+
+    return () => {
+      window.clearTimeout(saveAnnotationsTimerRef.current);
+    };
+  }, [annotations, annotationsReady, comparison, snapshot]);
+
+  useEffect(() => {
     if (snapshot == null || sidebarTab !== "history") {
       return;
     }
@@ -316,6 +366,42 @@ export function App() {
       next.delete(path);
       return next;
     });
+  }
+
+  function updateAnnotations(next: readonly Annotation[]) {
+    setAnnotations(next);
+  }
+
+  function deleteAnnotation(id: string) {
+    setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
+    setSelectedAnnotationId((current) => (current === id ? null : current));
+  }
+
+  function toggleAnnotationResolved(id: string) {
+    setAnnotations((current) =>
+      current.map((annotation) =>
+        annotation.id === id ? { ...annotation, resolved: !annotation.resolved } : annotation,
+      ),
+    );
+  }
+
+  function selectAnnotation(id: string | null) {
+    setSelectedAnnotationId(id);
+    if (id != null) {
+      const annotation = annotations.find((item) => item.id === id);
+      if (annotation != null) {
+        setSelectedPath(annotation.filePath);
+        setSidebarTab("annotations");
+        setCollapsedPaths((current) => {
+          if (!current.has(annotation.filePath)) {
+            return current;
+          }
+          const next = new Set(current);
+          next.delete(annotation.filePath);
+          return next;
+        });
+      }
+    }
   }
 
   function updateSidebarSettings(patch: Partial<SidebarSettings>) {
@@ -460,7 +546,13 @@ export function App() {
       >
         <aside
           aria-hidden={!sidebarVisible}
-          className={sidebarTab === "history" ? "sidebar history-active" : "sidebar"}
+          className={
+            sidebarTab === "history"
+              ? "sidebar history-active"
+              : sidebarTab === "annotations"
+                ? "sidebar annotations-active"
+                : "sidebar"
+          }
           inert={!sidebarVisible}
         >
           <section className="sidebar-tabs">
@@ -469,6 +561,12 @@ export function App() {
               onClick={() => setSidebarTab("changes")}
             >
               Changes ({loadState.snapshot.files.length})
+            </button>
+            <button
+              className={sidebarTab === "annotations" ? "tab active" : "tab"}
+              onClick={() => setSidebarTab("annotations")}
+            >
+              Notes ({annotations.filter((annotation) => !annotation.resolved).length})
             </button>
             <button
               className={sidebarTab === "history" ? "tab active" : "tab"}
@@ -492,6 +590,15 @@ export function App() {
               onToggleRead={toggleRead}
               onToggleReadMany={setManyRead}
               onViewDiff={chooseRepo}
+            />
+          ) : sidebarTab === "annotations" ? (
+            <AnnotationsPanel
+              annotations={annotations}
+              comparison={comparison}
+              onDeleteAnnotation={deleteAnnotation}
+              onSelectAnnotation={(id) => selectAnnotation(id)}
+              onToggleResolved={toggleAnnotationResolved}
+              selectedAnnotationId={selectedAnnotationId}
             />
           ) : (
             <HistoryList
@@ -546,17 +653,21 @@ export function App() {
             />
           </div>
           <DiffPreviewList
+            annotations={annotations}
             previews={diffPreviews}
             collapsedPaths={collapsedPaths}
             comparison={comparison}
             readPaths={readPaths}
             selectedPath={selectedPath}
+            selectedAnnotationId={selectedAnnotationId}
             leftWidth={leftWidth}
             mode={effectiveViewMode}
+            onAnnotationsChange={updateAnnotations}
             onOpenFile={(path) => void window.ziff.openFile(path)}
             onExpandContext={expandDiffContext}
             onResize={setLeftWidth}
             onSelect={selectPath}
+            onSelectAnnotation={selectAnnotation}
             onTogglePreview={togglePreview}
             onToggleRead={toggleRead}
           />

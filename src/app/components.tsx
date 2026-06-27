@@ -25,6 +25,7 @@ import {
 import {
   type CSSProperties,
   type PointerEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   createContext,
   memo,
@@ -47,6 +48,13 @@ import {
   mergeSyntax,
   organizeFiles,
 } from "./diffModel";
+import {
+  AnnotationInlineCards,
+  FileAnnotationProvider,
+  annotationMarkerCount,
+  scrollToAnnotation,
+  useOptionalFileAnnotations,
+} from "./annotationUi";
 import { type HighlightIndex, useDiffHighlight } from "./highlighter";
 import type {
   DiffPreview,
@@ -68,6 +76,8 @@ import type {
   SplitDiffRow,
   ViewMode,
   WorktreeEntry,
+  Annotation,
+  AnnotationSide,
 } from "../shared";
 
 type DiffBodyStyle = CSSProperties & { "--split-width": string };
@@ -1339,32 +1349,40 @@ function DelayedPopover({ children, label }: { children: ReactNode; label: strin
 }
 
 export function DiffPreviewList({
+  annotations,
   collapsedPaths,
   comparison,
   leftWidth,
   mode,
+  onAnnotationsChange,
   onOpenFile,
   onExpandContext,
   onResize,
   onSelect,
+  onSelectAnnotation,
   onTogglePreview,
   onToggleRead,
   previews,
   readPaths,
+  selectedAnnotationId,
   selectedPath,
 }: {
+  annotations: readonly Annotation[];
   collapsedPaths: ReadonlySet<string>;
   comparison: DiffComparison;
   leftWidth: number;
   mode: ViewMode;
+  onAnnotationsChange(next: readonly Annotation[]): void;
   onOpenFile(path: string): void;
   onExpandContext(path: string): void;
   onResize(width: number): void;
   onSelect(path: string): void;
+  onSelectAnnotation(id: string | null): void;
   onTogglePreview(path: string): void;
   onToggleRead(path: string): void;
   previews: readonly DiffPreview[];
   readPaths: ReadonlySet<string>;
+  selectedAnnotationId: string | null;
   selectedPath: string | null;
 }) {
   const previewRefs = useRef(new Map<string, HTMLElement>());
@@ -1389,6 +1407,13 @@ export function DiffPreviewList({
     const selectedPreview = previewRefs.current.get(selectedPath);
     selectedPreview?.scrollIntoView({ block: "start", inline: "nearest" });
   }, [selectedPath, previews]);
+
+  useEffect(() => {
+    if (selectedAnnotationId == null) {
+      return;
+    }
+    scrollToAnnotation(selectedAnnotationId);
+  }, [selectedAnnotationId, previews]);
 
   if (previews.length === 0) {
     return <section className="diff-empty">No changes</section>;
@@ -1451,14 +1476,22 @@ export function DiffPreviewList({
               </DelayedPopover>
             </header>
             {isCollapsed ? null : (
-              <DiffView
-                comparison={comparison}
-                diffPreview={preview}
-                leftWidth={leftWidth}
-                mode={mode}
-                onExpandContext={() => onExpandContext(preview.file.path)}
-                onResize={onResize}
-              />
+              <FileAnnotationProvider
+                annotations={annotations}
+                filePath={preview.file.path}
+                onChange={onAnnotationsChange}
+                onSelectAnnotation={onSelectAnnotation}
+                selectedAnnotationId={selectedAnnotationId}
+              >
+                <DiffView
+                  comparison={comparison}
+                  diffPreview={preview}
+                  leftWidth={leftWidth}
+                  mode={mode}
+                  onExpandContext={() => onExpandContext(preview.file.path)}
+                  onResize={onResize}
+                />
+              </FileAnnotationProvider>
             )}
           </section>
         );
@@ -1670,16 +1703,14 @@ const HunkView = memo(function HunkView({
   if (mode === "stacked") {
     return (
       <section className="hunk">
-        {hunk.rows.flatMap((row, index) => renderStackedRow(row, index))}
+        {hunk.rows.flatMap((row, index) => renderStackedRow(row, index, mode))}
       </section>
     );
   }
 
   return (
     <section className="hunk split-hunk">
-      {hunk.rows.map((row, index) => (
-        <SplitRow key={`${index}-${lineKey(row)}`} row={row} />
-      ))}
+      {hunk.rows.flatMap((row, index) => renderSplitRow(row, index, mode))}
       <SplitResizeHandle max={72} min={28} onResize={onResize} value={leftWidth} />
     </section>
   );
@@ -1844,33 +1875,38 @@ function SplitResizeHandle({
   );
 }
 
-function SplitRow({ row }: { row: SplitDiffRow }) {
+function renderSplitRow(row: SplitDiffRow, index: number, mode: ViewMode): ReactNode[] {
+  const keyBase = `${index}-${lineKey(row)}`;
   if (row.kind === "context") {
-    return (
-      <div className="split-row">
+    return [
+      <div className="split-row" key={`${keyBase}-row`}>
         <CodeCell side="old" tokenSide="old" line={row.oldLine} content={row.text} tone="context" />
         <CodeCell side="new" tokenSide="new" line={row.newLine} content={row.text} tone="context" />
-      </div>
-    );
+      </div>,
+      <AnnotationInlineCards key={`${keyBase}-old`} line={row.oldLine} mode={mode} side="old" />,
+      <AnnotationInlineCards key={`${keyBase}-new`} line={row.newLine} mode={mode} side="new" />,
+    ];
   }
   if (row.kind === "delete") {
-    return (
-      <div className="split-row">
+    return [
+      <div className="split-row" key={`${keyBase}-row`}>
         <CodeCell side="old" tokenSide="old" line={row.oldLine} content={row.text} tone="delete" />
         <CodeCell side="new" line={null} content="" tone="empty" />
-      </div>
-    );
+      </div>,
+      <AnnotationInlineCards key={`${keyBase}-cards`} line={row.oldLine} mode={mode} side="old" />,
+    ];
   }
   if (row.kind === "add") {
-    return (
-      <div className="split-row">
+    return [
+      <div className="split-row" key={`${keyBase}-row`}>
         <CodeCell side="old" line={null} content="" tone="empty" />
         <CodeCell side="new" tokenSide="new" line={row.newLine} content={row.text} tone="add" />
-      </div>
-    );
+      </div>,
+      <AnnotationInlineCards key={`${keyBase}-cards`} line={row.newLine} mode={mode} side="new" />,
+    ];
   }
-  return (
-    <div className="split-row">
+  return [
+    <div className="split-row" key={`${keyBase}-row`}>
       <CodeCell
         side="old"
         tokenSide="old"
@@ -1887,27 +1923,31 @@ function SplitRow({ row }: { row: SplitDiffRow }) {
         tone="add"
         wordFragments={getInlineFragments(row.oldText, row.newText, "new")}
       />
-    </div>
-  );
+    </div>,
+    <AnnotationInlineCards key={`${keyBase}-old`} line={row.oldLine} mode={mode} side="old" />,
+    <AnnotationInlineCards key={`${keyBase}-new`} line={row.newLine} mode={mode} side="new" />,
+  ];
 }
 
-function renderStackedRow(row: SplitDiffRow, index: number) {
+function renderStackedRow(row: SplitDiffRow, index: number, mode: ViewMode): ReactNode[] {
+  const keyBase = `${index}-${lineKey(row)}`;
   if (row.kind === "context") {
     return [
       <CodeCell
-        key={index}
+        key={`${keyBase}-row`}
         side="both"
         tokenSide="new"
         line={row.newLine}
         content={row.text}
         tone="context"
       />,
+      <AnnotationInlineCards key={`${keyBase}-cards`} line={row.newLine} mode={mode} side="new" />,
     ];
   }
   if (row.kind === "delete") {
     return [
       <CodeCell
-        key={index}
+        key={`${keyBase}-row`}
         side="both"
         tokenSide="old"
         line={row.oldLine}
@@ -1915,12 +1955,13 @@ function renderStackedRow(row: SplitDiffRow, index: number) {
         prefix="- "
         tone="delete"
       />,
+      <AnnotationInlineCards key={`${keyBase}-cards`} line={row.oldLine} mode={mode} side="old" />,
     ];
   }
   if (row.kind === "add") {
     return [
       <CodeCell
-        key={index}
+        key={`${keyBase}-row`}
         side="both"
         tokenSide="new"
         line={row.newLine}
@@ -1928,11 +1969,12 @@ function renderStackedRow(row: SplitDiffRow, index: number) {
         prefix="+ "
         tone="add"
       />,
+      <AnnotationInlineCards key={`${keyBase}-cards`} line={row.newLine} mode={mode} side="new" />,
     ];
   }
   return [
     <CodeCell
-      key={`${index}-old`}
+      key={`${keyBase}-old`}
       side="both"
       tokenSide="old"
       line={row.oldLine}
@@ -1941,8 +1983,9 @@ function renderStackedRow(row: SplitDiffRow, index: number) {
       tone="delete"
       wordFragments={getInlineFragments(row.oldText, row.newText, "old")}
     />,
+    <AnnotationInlineCards key={`${keyBase}-old-cards`} line={row.oldLine} mode={mode} side="old" />,
     <CodeCell
-      key={`${index}-new`}
+      key={`${keyBase}-new`}
       side="both"
       tokenSide="new"
       line={row.newLine}
@@ -1951,6 +1994,7 @@ function renderStackedRow(row: SplitDiffRow, index: number) {
       tone="add"
       wordFragments={getInlineFragments(row.oldText, row.newText, "new")}
     />,
+    <AnnotationInlineCards key={`${keyBase}-new-cards`} line={row.newLine} mode={mode} side="new" />,
   ];
 }
 
@@ -1978,13 +2022,54 @@ function CodeCell({
   wordFragments?: readonly RenderSegment[];
 }) {
   const highlight = useContext(HighlightContext);
+  const annotationContext = useOptionalFileAnnotations();
   const tokens = tokenSide != null && line != null ? highlight.getTokens(tokenSide, line) : null;
   const base: readonly RenderSegment[] = wordFragments ?? [{ text: content, highlighted: false }];
   const segments = tokens != null ? mergeSyntax(content, tokens, base) : base;
   const rendered = prefix != null ? [{ text: prefix, highlighted: false }, ...segments] : segments;
+  const annotationSide = getAnnotationSide(side, tokenSide);
+  const markerCount =
+    annotationContext != null && annotationSide != null && line != null
+      ? annotationMarkerCount(annotationContext.annotations, annotationSide, line)
+      : 0;
+  const selected =
+    annotationContext != null &&
+    annotationSide != null &&
+    line != null &&
+    annotationContext.pendingSelection != null &&
+    annotationContext.pendingSelection.side === annotationSide &&
+    line >= Math.min(annotationContext.pendingSelection.start, annotationContext.pendingSelection.end) &&
+    line <= Math.max(annotationContext.pendingSelection.start, annotationContext.pendingSelection.end);
+
+  function handleLineNumberClick(event: ReactMouseEvent<HTMLButtonElement>) {
+    if (annotationContext == null || annotationSide == null || line == null) {
+      return;
+    }
+    event.preventDefault();
+    annotationContext.onLineNumberClick(annotationSide, line, event.shiftKey);
+  }
+
   return (
     <div className={`code-cell ${side} ${tone}`}>
-      <span className="line-number">{line ?? ""}</span>
+      {line == null || annotationSide == null ? (
+        <span className="line-number">{line ?? ""}</span>
+      ) : (
+        <button
+          className={
+            selected
+              ? "line-number line-number-button selected"
+              : markerCount > 0
+                ? "line-number line-number-button annotated"
+                : "line-number line-number-button"
+          }
+          onClick={handleLineNumberClick}
+          title="Add annotation (Shift-click to extend range)"
+          type="button"
+        >
+          {markerCount > 0 ? <span className="line-annotation-marker">{markerCount}</span> : null}
+          <span>{line}</span>
+        </button>
+      )}
       <code>
         {rendered.map((segment, index) => (
           <span
@@ -1998,6 +2083,16 @@ function CodeCell({
       </code>
     </div>
   );
+}
+
+function getAnnotationSide(
+  side: "old" | "new" | "both",
+  tokenSide?: "old" | "new",
+): AnnotationSide | null {
+  if (side === "old" || side === "new") {
+    return side;
+  }
+  return tokenSide ?? null;
 }
 
 function getImagePreviewSides(preview: ImagePreview): readonly RenderImagePreviewSide[] {

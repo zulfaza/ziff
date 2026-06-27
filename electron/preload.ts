@@ -13,6 +13,7 @@ import type {
 const api: ZiffApi = {
   chooseRepo: () => ipcRenderer.invoke("repo:choose"),
   commit: (request: CommitRequest) => ipcRenderer.invoke("repo:commit", request),
+  getAnnotations: (request) => ipcRenderer.invoke("annotations:get", request),
   getComparison: (comparison: DiffComparison) => ipcRenderer.invoke("repo:compare", comparison),
   getDiff: (request: DiffRequest) => ipcRenderer.invoke("repo:diff", request),
   getImagePreview: (request: ImagePreviewRequest) =>
@@ -23,6 +24,7 @@ const api: ZiffApi = {
   openFile: (path: string) => ipcRenderer.invoke("repo:open-file", path),
   openProjectWindow: (path: string) => ipcRenderer.invoke("repo:open-project-window", path),
   refresh: () => ipcRenderer.invoke("repo:refresh"),
+  saveAnnotations: (request) => ipcRenderer.invoke("annotations:save", request),
   stage: (path: string) => ipcRenderer.invoke("repo:stage", path),
   stageAll: () => ipcRenderer.invoke("repo:stage-all"),
   switchBranch: (branch: string) => ipcRenderer.invoke("repo:switch-branch", branch),

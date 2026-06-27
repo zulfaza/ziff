@@ -120,6 +120,28 @@ export interface SidebarSettings {
   fileListView: FileListView;
 }
 
+export type AnnotationKind = "review" | "agent";
+
+export type AnnotationSide = "old" | "new";
+
+export interface Annotation {
+  id: string;
+  filePath: string;
+  side: AnnotationSide;
+  lineStart: number;
+  lineEnd: number;
+  kind: AnnotationKind;
+  body: string;
+  createdAt: number;
+  author?: string;
+  resolved?: boolean;
+}
+
+export interface AnnotationRequest {
+  comparison: DiffComparison;
+  repoPath: string;
+}
+
 export interface CommitRequest {
   message: string;
 }
@@ -144,6 +166,7 @@ export interface ImagePreviewRequest {
 export interface ZiffApi {
   chooseRepo(): Promise<RepoSnapshot | null>;
   commit(request: CommitRequest): Promise<RepoSnapshot>;
+  getAnnotations(request: AnnotationRequest): Promise<readonly Annotation[]>;
   getComparison(comparison: DiffComparison): Promise<RepoSnapshot>;
   getDiff(request: DiffRequest): Promise<FileDiff>;
   getImagePreview(request: ImagePreviewRequest): Promise<ImagePreview>;
@@ -153,6 +176,9 @@ export interface ZiffApi {
   openFile(path: string): Promise<void>;
   openProjectWindow(path: string): Promise<void>;
   refresh(): Promise<RepoSnapshot | null>;
+  saveAnnotations(request: AnnotationRequest & { annotations: readonly Annotation[] }): Promise<
+    readonly Annotation[]
+  >;
   stage(path: string): Promise<RepoSnapshot>;
   stageAll(): Promise<RepoSnapshot>;
   switchBranch(branch: string): Promise<RepoSnapshot>;
