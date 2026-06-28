@@ -115,10 +115,15 @@ export type FileListView = "list" | "tree";
 
 export type FileGroupBy = "none" | "status";
 
-export interface SidebarSettings {
+export interface UserSettings {
+  defaultViewMode: ViewMode;
   fileGroupBy: FileGroupBy;
   fileListView: FileListView;
+  restoreLastRepo: boolean;
 }
+
+/** @deprecated Use UserSettings */
+export type SidebarSettings = UserSettings;
 
 export interface CommitRequest {
   message: string;
@@ -141,6 +146,10 @@ export interface ImagePreviewRequest {
   previousPath: string | null;
 }
 
+import type { ResolvedKeybindingsConfig } from "./keybindings";
+
+export type { KeybindingCommand, ResolvedKeybindingsConfig } from "./keybindings";
+
 export interface ZiffApi {
   chooseRepo(): Promise<RepoSnapshot | null>;
   commit(request: CommitRequest): Promise<RepoSnapshot>;
@@ -148,15 +157,22 @@ export interface ZiffApi {
   getDiff(request: DiffRequest): Promise<FileDiff>;
   getImagePreview(request: ImagePreviewRequest): Promise<ImagePreview>;
   getHistory(): Promise<readonly CommitEntry[]>;
-  getSettings(): Promise<SidebarSettings>;
+  getKeybindings(): Promise<ResolvedKeybindingsConfig>;
+  getKeybindingsConfigPath(): Promise<string>;
+  getSettings(): Promise<UserSettings>;
   getSnapshot(): Promise<RepoSnapshot | null>;
+  onKeybindingsChanged(listener: () => void): () => void;
+  onOpenSettings(listener: () => void): () => void;
   openFile(path: string): Promise<void>;
+  openKeybindingsConfig(): Promise<void>;
   openProjectWindow(path: string): Promise<void>;
   refresh(): Promise<RepoSnapshot | null>;
+  resetKeybindings(): Promise<ResolvedKeybindingsConfig>;
+  resetSettings(): Promise<UserSettings>;
   stage(path: string): Promise<RepoSnapshot>;
   stageAll(): Promise<RepoSnapshot>;
   switchBranch(branch: string): Promise<RepoSnapshot>;
   switchWorktree(path: string): Promise<RepoSnapshot>;
   unstage(path: string): Promise<RepoSnapshot>;
-  updateSettings(settings: Partial<SidebarSettings>): Promise<SidebarSettings>;
+  updateSettings(settings: Partial<UserSettings>): Promise<UserSettings>;
 }
