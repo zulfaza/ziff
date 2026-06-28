@@ -1,9 +1,17 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { app, BrowserWindow, dialog, ipcMain, Menu } from "electron";
+import {
+  getComparisonKey,
+  parseAnnotationKind,
+  parseAnnotationSide,
+  parseAnnotationStatus,
+  parseAnnotationStore,
+} from "../src/annotations";
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from "electron";
 import {
   buildComparisonFileEntries,
@@ -12,9 +20,15 @@ import {
   parseUnifiedDiff,
 } from "../src/gitDiff";
 import type {
+  Annotation,
+  AnnotationAuthor,
+  AnnotationKind,
+  AnnotationSide,
+  AnnotationStatus,
   BranchEntry,
   CommitEntry,
   CommitRequest,
+  CreateAnnotationRequest,
   DiffComparison,
   DiffRequest,
   FileDiff,
@@ -27,6 +41,7 @@ import type {
   RepoInfo,
   RepoSnapshot,
   SidebarSettings,
+  UpdateAnnotationRequest,
   WorktreeEntry,
 } from "../src/shared";
 
@@ -239,6 +254,71 @@ ipcMain.handle("settings:update", async (_event, patch: unknown): Promise<Sideba
     fileGroupBy: next.fileGroupBy,
     fileListView: next.fileListView,
   };
+});
+
+ipcMain.handle(
+  "annotations:list",
+  async (event, comparison: unknown): Promise<readonly Annotation[]> => {
+    const cwd = requireRepoPath(getWindowState(event));
+    const parsedComparison = parseDiffComparison(comparison);
+    return readAnnotations(cwd, parsedComparison);
+  },
+);
+
+ipcMain.handle("annotations:create", async (event, request: unknown): Promise<Annotation> => {
+  const cwd = requireRepoPath(getWindowState(event));
+  const parsedRequest = parseCreateAnnotationRequest(request);
+  const annotations = await readAllAnnotations(cwd);
+  const author = await readAnnotationAuthor(cwd);
+  const annotation: Annotation = {
+    id: randomUUID(),
+    file: parsedRequest.file,
+    lineStart: parsedRequest.lineStart,
+    lineEnd: parsedRequest.lineEnd,
+    side: parsedRequest.side,
+    kind: parsedRequest.kind,
+    body: parsedRequest.body,
+    comparison: parsedRequest.comparison,
+    createdAt: new Date().toISOString(),
+    status: { state: "open" },
+    author,
+  };
+  await writeAllAnnotations(cwd, [...annotations, annotation]);
+  return annotation;
+});
+
+ipcMain.handle("annotations:author", async (event): Promise<AnnotationAuthor> => {
+  const cwd = requireRepoPath(getWindowState(event));
+  return readAnnotationAuthor(cwd);
+});
+
+ipcMain.handle("annotations:update", async (event, request: unknown): Promise<Annotation> => {
+  const cwd = requireRepoPath(getWindowState(event));
+  const parsedRequest = parseUpdateAnnotationRequest(request);
+  const annotations = await readAllAnnotations(cwd);
+  let updated: Annotation | null = null;
+  const next = annotations.map((annotation): Annotation => {
+    if (annotation.id !== parsedRequest.id) {
+      return annotation;
+    }
+    updated = { ...annotation, ...parsedRequest };
+    return updated;
+  });
+  if (updated == null) {
+    throw new Error("Annotation not found");
+  }
+  await writeAllAnnotations(cwd, next);
+  return updated;
+});
+
+ipcMain.handle("annotations:delete", async (event, id: unknown): Promise<void> => {
+  const cwd = requireRepoPath(getWindowState(event));
+  const parsedId = parseName(id);
+  const annotations = await readAllAnnotations(cwd);
+  await writeAllAnnotations(
+    cwd,
+    annotations.filter((annotation) => annotation.id !== parsedId),
+  );
 });
 
 ipcMain.handle("repo:choose", async (event): Promise<RepoSnapshot | null> => {
@@ -818,6 +898,70 @@ function getSettingsPath(): string {
   return join(app.getPath("userData"), "settings.json");
 }
 
+async function readAnnotations(
+  cwd: string,
+  comparison: DiffComparison,
+): Promise<readonly Annotation[]> {
+  const comparisonKey = getComparisonKey(comparison);
+  const annotations = await readAllAnnotations(cwd);
+  return annotations.filter(
+    (annotation) => getComparisonKey(annotation.comparison) === comparisonKey,
+  );
+}
+
+async function readAllAnnotations(cwd: string): Promise<readonly Annotation[]> {
+  try {
+    const raw = await readFile(getAnnotationsPath(cwd), "utf8");
+    return parseAnnotationStore(JSON.parse(raw)).annotations;
+  } catch {
+    return [];
+  }
+}
+
+async function writeAllAnnotations(cwd: string, annotations: readonly Annotation[]): Promise<void> {
+  const path = getAnnotationsPath(cwd);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify({ version: 1, annotations }, null, 2), "utf8");
+}
+
+function getAnnotationsPath(cwd: string): string {
+  const key = createHash("sha256").update(cwd).digest("hex").slice(0, 32);
+  return join(app.getPath("userData"), "annotations", `${key}.json`);
+}
+
+async function readAnnotationAuthor(cwd: string): Promise<AnnotationAuthor> {
+  const [githubUser, name, email] = await Promise.all([
+    readGitConfig(cwd, "github.user"),
+    readGitConfig(cwd, "user.name"),
+    readGitConfig(cwd, "user.email"),
+  ]);
+  const githubLogin = githubUser ?? getGithubLoginFromNoreplyEmail(email);
+  if (githubLogin != null) {
+    return {
+      name: githubLogin,
+      avatarUrl: `https://github.com/${githubLogin}.png?size=48`,
+    };
+  }
+  return { name: name ?? "You", avatarUrl: null };
+}
+
+async function readGitConfig(cwd: string, key: string): Promise<string | null> {
+  const value = (await gitAllowFailure(cwd, ["config", "--get", key])).trim();
+  return value.length === 0 ? null : value;
+}
+
+function getGithubLoginFromNoreplyEmail(email: string | null): string | null {
+  if (email == null) {
+    return null;
+  }
+  const match = /^(?:(\d+)\+)?([^@]+)@users\.noreply\.github\.com$/i.exec(email);
+  if (match == null) {
+    return null;
+  }
+  const login = match[2];
+  return typeof login === "string" && login.length > 0 ? login : null;
+}
+
 function parseSettings(value: unknown): AppSettings {
   if (typeof value !== "object" || value == null) {
     return DEFAULT_SETTINGS;
@@ -933,6 +1077,106 @@ function parsePath(value: unknown): string {
     throw new Error("Expected path");
   }
   return value;
+}
+
+function parseCreateAnnotationRequest(value: unknown): CreateAnnotationRequest {
+  if (
+    typeof value !== "object" ||
+    value == null ||
+    !("file" in value) ||
+    !("side" in value) ||
+    !("kind" in value) ||
+    !("body" in value) ||
+    !("comparison" in value)
+  ) {
+    throw new Error("Expected annotation request");
+  }
+
+  const lineRange = parseAnnotationLineRange(value);
+  return {
+    file: parsePath(value.file),
+    lineStart: lineRange.start,
+    lineEnd: lineRange.end,
+    side: requireAnnotationSide(value.side),
+    kind: requireAnnotationKind(value.kind),
+    body: parseAnnotationBody(value.body),
+    comparison: parseDiffComparison(value.comparison),
+  };
+}
+
+function parseUpdateAnnotationRequest(value: unknown): UpdateAnnotationRequest {
+  if (typeof value !== "object" || value == null || !("id" in value)) {
+    throw new Error("Expected annotation update");
+  }
+
+  const update: UpdateAnnotationRequest = { id: parseName(value.id) };
+  if ("body" in value) {
+    update.body = parseAnnotationBody(value.body);
+  }
+  if ("kind" in value) {
+    update.kind = requireAnnotationKind(value.kind);
+  }
+  if ("status" in value) {
+    update.status = requireAnnotationStatus(value.status);
+  }
+  return update;
+}
+
+function parseAnnotationLineRange(value: object): { end: number; start: number } {
+  if ("lineStart" in value || "lineEnd" in value) {
+    if (!("lineStart" in value) || !("lineEnd" in value)) {
+      throw new Error("Expected annotation line range");
+    }
+    const start = parseAnnotationLine(value.lineStart);
+    const end = parseAnnotationLine(value.lineEnd);
+    if (start > end) {
+      throw new Error("Expected annotation line range");
+    }
+    return { start, end };
+  }
+  if ("line" in value) {
+    const line = parseAnnotationLine(value.line);
+    return { start: line, end: line };
+  }
+  throw new Error("Expected annotation line range");
+}
+
+function parseAnnotationLine(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error("Expected annotation line");
+  }
+  return value;
+}
+
+function parseAnnotationBody(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Expected annotation body");
+  }
+  return value.trim();
+}
+
+function requireAnnotationKind(value: unknown): AnnotationKind {
+  const kind = parseAnnotationKind(value);
+  if (kind == null) {
+    throw new Error("Expected annotation kind");
+  }
+  return kind;
+}
+
+function requireAnnotationSide(value: unknown): AnnotationSide {
+  const side = parseAnnotationSide(value);
+  if (side == null) {
+    throw new Error("Expected annotation side");
+  }
+  return side;
+}
+
+function requireAnnotationStatus(value: unknown): AnnotationStatus {
+  const status = parseAnnotationStatus(value);
+  if (status == null) {
+    throw new Error("Expected annotation status");
+  }
+  return status;
 }
 
 function parseNullablePath(value: unknown): string | null {

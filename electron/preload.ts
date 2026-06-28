@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  CreateAnnotationRequest,
   CommitRequest,
   DiffComparison,
   DiffRequest,
@@ -7,12 +8,19 @@ import type {
   ImagePreviewRequest,
   RepoSnapshot,
   SidebarSettings,
+  UpdateAnnotationRequest,
   ZiffApi,
 } from "../src/shared";
 
 const api: ZiffApi = {
   chooseRepo: () => ipcRenderer.invoke("repo:choose"),
   commit: (request: CommitRequest) => ipcRenderer.invoke("repo:commit", request),
+  createAnnotation: (request: CreateAnnotationRequest) =>
+    ipcRenderer.invoke("annotations:create", request),
+  deleteAnnotation: (id: string) => ipcRenderer.invoke("annotations:delete", id),
+  getAnnotationAuthor: () => ipcRenderer.invoke("annotations:author"),
+  getAnnotations: (comparison: DiffComparison) =>
+    ipcRenderer.invoke("annotations:list", comparison),
   getComparison: (comparison: DiffComparison) => ipcRenderer.invoke("repo:compare", comparison),
   getDiff: (request: DiffRequest) => ipcRenderer.invoke("repo:diff", request),
   getImagePreview: (request: ImagePreviewRequest) =>
@@ -28,6 +36,8 @@ const api: ZiffApi = {
   switchBranch: (branch: string) => ipcRenderer.invoke("repo:switch-branch", branch),
   switchWorktree: (path: string) => ipcRenderer.invoke("repo:switch-worktree", path),
   unstage: (path: string) => ipcRenderer.invoke("repo:unstage", path),
+  updateAnnotation: (request: UpdateAnnotationRequest) =>
+    ipcRenderer.invoke("annotations:update", request),
   updateSettings: (settings: Partial<SidebarSettings>) =>
     ipcRenderer.invoke("settings:update", settings),
 };

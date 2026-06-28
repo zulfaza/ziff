@@ -31,7 +31,7 @@ export type DiffPreview =
 
 export type HeaderMenu = "project" | "worktree" | "branch";
 
-export type SidebarTab = "changes" | "history";
+export type SidebarTab = "annotations" | "changes" | "history";
 
 export interface RecentProject {
   name: string;

@@ -8,7 +8,7 @@
     "start": "env -u ELECTRON_RUN_AS_NODE electron .",
     "build": "tsc -p tsconfig.json && vite build",
     "dist": "pnpm build && electron-builder --publish never",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test \"src/**/*.test.ts\"",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",

@@ -1,13 +1,16 @@
 import {
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
   Code2,
+  Columns2,
+  Copy,
+  Edit3,
   ExternalLink,
   FileCode2,
-  Filter,
   Folder,
   FolderOpen,
   GitBranch,
@@ -15,8 +18,10 @@ import {
   GitCompareArrows,
   GitFork,
   ImageIcon,
+  MessageSquare,
   Monitor,
   Plus,
+  Rows3,
   Search,
   SlidersHorizontal,
   Trash2,
@@ -26,6 +31,7 @@ import {
   type CSSProperties,
   type PointerEvent,
   type ReactNode,
+  type RefObject,
   createContext,
   memo,
   useContext,
@@ -36,6 +42,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { getAnnotationAnchorKey, isLineInAnnotationRange } from "../annotations";
 import {
   clamp,
   collectFilePaths,
@@ -47,6 +54,7 @@ import {
   mergeSyntax,
   organizeFiles,
 } from "./diffModel";
+import { resolveHeaderHotkey } from "./hotkeys";
 import { type HighlightIndex, useDiffHighlight } from "./highlighter";
 import type {
   DiffPreview,
@@ -55,8 +63,14 @@ import type {
   FileTreeNode,
   HeaderMenu,
   RecentProject,
+  SidebarTab,
 } from "./types";
 import type {
+  Annotation,
+  AnnotationAnchor,
+  AnnotationAuthor,
+  AnnotationKind,
+  AnnotationSide,
   BranchEntry,
   CommitEntry,
   DiffComparison,
@@ -97,8 +111,61 @@ interface HunkLineInfo {
   oldRange: LineRange | null;
 }
 
+type AnnotationFilterKind = AnnotationKind | "all";
+
+type AnnotationFilterStatus = "all" | "open";
+
+type AnnotationSelectionMode = "extend" | "range" | "replace";
+
+interface AnnotationClickEvent {
+  shiftKey: boolean;
+}
+
+interface AnnotationDragState {
+  candidates: readonly AnnotationDragCandidate[];
+  finalAnchor: AnnotationAnchor;
+  frameId: number | null;
+  file: string;
+  lastLine: number;
+  mode: AnnotationSelectionMode;
+  pendingPosition: PointerPosition | null;
+  pointerId: number;
+  previewElements: Set<HTMLElement>;
+  side: AnnotationSide;
+  startLine: number;
+}
+
+interface AnnotationDragCandidate {
+  cell: HTMLElement;
+  line: number;
+}
+
+interface PointerPosition {
+  clientX: number;
+  clientY: number;
+}
+
+interface AnnotationDragController {
+  end(pointerId: number): void;
+  enter(anchor: AnnotationAnchor): void;
+  move(clientX: number, clientY: number, pointerId: number): void;
+  start(anchor: AnnotationAnchor, pointerId: number, mode: AnnotationSelectionMode): void;
+}
+
+type AnnotationEditorState =
+  | { type: "create"; anchor: AnnotationAnchor; kind: AnnotationKind }
+  | { type: "edit"; annotation: Annotation };
+
+interface AnnotationActions {
+  onDelete(id: string): void;
+  onEdit(annotation: Annotation): void;
+  onSelect(annotation: Annotation): void;
+  onToggleResolved(annotation: Annotation): void;
+}
+
 const formatter = new Intl.NumberFormat("en-US");
 const recentBranchLimit = 8;
+const AnnotationDragContext = createContext<AnnotationDragController | null>(null);
 
 export function ComparisonControls({
   comparison,
@@ -363,10 +430,8 @@ function getDefaultBaseBranch(branches: readonly string[], currentBranch: string
 }
 
 export function RepoHeader({
-  menu,
   onChooseRepo,
   onForgetProject,
-  onMenuChange,
   onOpenProjectWindow,
   onSwitchBranch,
   onSwitchProject,
@@ -374,10 +439,8 @@ export function RepoHeader({
   recentProjects,
   snapshot,
 }: {
-  menu: HeaderMenu | null;
   onChooseRepo(): void;
   onForgetProject(path: string): void;
-  onMenuChange(menu: HeaderMenu | null): void;
   onOpenProjectWindow(path: string): void;
   onSwitchBranch(branch: string): void;
   onSwitchProject(path: string): void;
@@ -385,23 +448,64 @@ export function RepoHeader({
   recentProjects: readonly RecentProject[];
   snapshot: RepoSnapshot;
 }) {
+  const [menu, setMenu] = useState<HeaderMenu | null>(null);
   const info = snapshot.info;
+
+  useEffect(() => {
+    function closeMenu(event: MouseEvent) {
+      if (event.target instanceof Element && event.target.closest(".header-menu-wrap") != null) {
+        return;
+      }
+      setMenu(null);
+    }
+
+    window.addEventListener("mousedown", closeMenu);
+    return () => window.removeEventListener("mousedown", closeMenu);
+  }, []);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && menu != null) {
+        event.preventDefault();
+        setMenu(null);
+        return;
+      }
+
+      const action = resolveHeaderHotkey(event);
+      if (action == null) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      setMenu(headerHotkeyToMenu(action));
+    }
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [menu]);
+
+  function closeMenuAndRun(action: () => void) {
+    setMenu(null);
+    action();
+  }
+
   return (
     <nav className="repo-header" aria-label="Repository">
       <HeaderSelector
         active={menu === "project"}
         kind="project"
         label={info.projectName}
-        onClick={() => onMenuChange(toggleMenu(menu, "project"))}
+        onClick={() => setMenu(toggleMenu(menu, "project"))}
       >
         {menu === "project" ? (
           <ProjectMenu
             currentPath={info.path}
             projects={recentProjects}
-            onChooseRepo={onChooseRepo}
+            onChooseRepo={() => closeMenuAndRun(onChooseRepo)}
             onForgetProject={onForgetProject}
-            onOpenProjectWindow={onOpenProjectWindow}
-            onSwitchProject={onSwitchProject}
+            onOpenProjectWindow={(path) => closeMenuAndRun(() => onOpenProjectWindow(path))}
+            onSwitchProject={(path) => closeMenuAndRun(() => onSwitchProject(path))}
           />
         ) : null}
       </HeaderSelector>
@@ -410,13 +514,12 @@ export function RepoHeader({
         icon={<GitFork size={15} />}
         kind="meta"
         label={info.worktree}
-        onClick={() => onMenuChange(toggleMenu(menu, "worktree"))}
+        onClick={() => setMenu(toggleMenu(menu, "worktree"))}
       >
         {menu === "worktree" ? (
           <WorktreeMenu
-            currentBranch={info.branch}
             worktrees={info.worktrees}
-            onSwitchWorktree={onSwitchWorktree}
+            onSwitchWorktree={(path) => closeMenuAndRun(() => onSwitchWorktree(path))}
           />
         ) : null}
       </HeaderSelector>
@@ -426,10 +529,13 @@ export function RepoHeader({
         icon={<GitBranch size={15} />}
         kind="meta"
         label={info.branch}
-        onClick={() => onMenuChange(toggleMenu(menu, "branch"))}
+        onClick={() => setMenu(toggleMenu(menu, "branch"))}
       >
         {menu === "branch" ? (
-          <BranchMenu branches={info.branches} onSwitchBranch={onSwitchBranch} />
+          <BranchMenu
+            branches={info.branches}
+            onSwitchBranch={(branch) => closeMenuAndRun(() => onSwitchBranch(branch))}
+          />
         ) : null}
       </HeaderSelector>
     </nav>
@@ -529,11 +635,9 @@ function ProjectMenu({
 }
 
 function WorktreeMenu({
-  currentBranch,
   onSwitchWorktree,
   worktrees,
 }: {
-  currentBranch: string;
   onSwitchWorktree(path: string): void;
   worktrees: readonly WorktreeEntry[];
 }) {
@@ -543,15 +647,7 @@ function WorktreeMenu({
   );
   return (
     <section className="header-menu worktree-menu">
-      <SearchField
-        onChange={setQuery}
-        placeholder="Select or type to create a worktree..."
-        value={query}
-      />
-      <button className="menu-row create-row">
-        <Plus size={18} />
-        <span className="menu-primary">Create new worktree based on {currentBranch}</span>
-      </button>
+      <SearchField onChange={setQuery} placeholder="Search worktrees..." value={query} />
       <div className="menu-list">
         {filteredWorktrees.map((worktree) => (
           <button
@@ -586,20 +682,11 @@ function BranchMenu({
   );
   return (
     <section className="header-menu branch-menu">
-      <div className="menu-tabs">
-        <button className="active">Branches</button>
-        <button>Stashes</button>
-      </div>
-      <div className="menu-search-row">
-        <SearchField
-          onChange={setQuery}
-          placeholder="Switch or type to create a branch..."
-          value={query}
-        />
-        <button className="menu-icon-button" title="Filter branches">
-          <Filter size={18} />
-        </button>
-      </div>
+      <SearchField
+        onChange={setQuery}
+        placeholder="Switch or type to create a branch..."
+        value={query}
+      />
       <div className="menu-list">
         {filteredBranches.map((branch) => (
           <button
@@ -819,6 +906,155 @@ export function Splash({
     </main>
   );
 }
+
+export const Sidebar = memo(function Sidebar({
+  annotationKind,
+  annotations,
+  comparison,
+  fileGroupBy,
+  fileListView,
+  onAnnotationKindChange,
+  onChangeComparison,
+  onCopyPrompt,
+  onDeleteAnnotation,
+  onEditAnnotation,
+  onFileGroupByChange,
+  onFileListViewChange,
+  onSelectAnnotation,
+  onSelectPath,
+  onToggleAnnotationResolved,
+  onToggleRead,
+  onToggleReadMany,
+  onViewDiff,
+  readPaths,
+  selectedAnnotationId,
+  selectedPath,
+  snapshot,
+  totalsAdded,
+  totalsDeleted,
+  visible,
+}: {
+  annotationKind: AnnotationKind;
+  annotations: readonly Annotation[];
+  comparison: DiffComparison;
+  fileGroupBy: FileGroupBy;
+  fileListView: FileListView;
+  onAnnotationKindChange(kind: AnnotationKind): void;
+  onChangeComparison(comparison: DiffComparison): void;
+  onCopyPrompt(annotations: readonly Annotation[]): void;
+  onDeleteAnnotation(id: string): void;
+  onEditAnnotation(annotation: Annotation): void;
+  onFileGroupByChange(groupBy: FileGroupBy): void;
+  onFileListViewChange(view: FileListView): void;
+  onSelectAnnotation(annotation: Annotation): void;
+  onSelectPath(path: string): void;
+  onToggleAnnotationResolved(annotation: Annotation): void;
+  onToggleRead(path: string): void;
+  onToggleReadMany(paths: readonly string[], read: boolean): void;
+  onViewDiff(): void;
+  readPaths: ReadonlySet<string>;
+  selectedAnnotationId: string | null;
+  selectedPath: string | null;
+  snapshot: RepoSnapshot;
+  totalsAdded: number;
+  totalsDeleted: number;
+  visible: boolean;
+}) {
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>("changes");
+  const [commits, setCommits] = useState<readonly CommitEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  useEffect(() => {
+    if (sidebarTab !== "history") {
+      return;
+    }
+
+    let active = true;
+    setHistoryLoading(true);
+    void window.ziff
+      .getHistory()
+      .then((nextCommits) => {
+        if (active) {
+          setCommits(nextCommits);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setHistoryLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [snapshot, sidebarTab]);
+
+  return (
+    <aside
+      aria-hidden={!visible}
+      className={sidebarTab === "changes" ? "sidebar" : "sidebar single-panel-active"}
+      inert={!visible}
+    >
+      <section className="sidebar-tabs">
+        <button
+          className={sidebarTab === "changes" ? "tab active" : "tab"}
+          onClick={() => setSidebarTab("changes")}
+        >
+          Changes ({snapshot.files.length})
+        </button>
+        <button
+          className={sidebarTab === "history" ? "tab active" : "tab"}
+          onClick={() => setSidebarTab("history")}
+        >
+          History
+        </button>
+        <button
+          className={sidebarTab === "annotations" ? "tab active" : "tab"}
+          onClick={() => setSidebarTab("annotations")}
+        >
+          Notes ({annotations.length})
+        </button>
+      </section>
+      {sidebarTab === "changes" ? (
+        <ChangesPanel
+          files={snapshot.files}
+          fileGroupBy={fileGroupBy}
+          fileListView={fileListView}
+          readPaths={readPaths}
+          selectedPath={selectedPath}
+          totalsAdded={totalsAdded}
+          totalsDeleted={totalsDeleted}
+          onFileGroupByChange={onFileGroupByChange}
+          onFileListViewChange={onFileListViewChange}
+          onSelect={onSelectPath}
+          onToggleRead={onToggleRead}
+          onToggleReadMany={onToggleReadMany}
+          onViewDiff={onViewDiff}
+        />
+      ) : sidebarTab === "history" ? (
+        <HistoryList
+          activeHash={comparison.type === "commit" ? comparison.hash : null}
+          commits={commits}
+          loading={historyLoading}
+          onSelectCommit={(hash) => onChangeComparison({ type: "commit", hash })}
+        />
+      ) : (
+        <AnnotationsPanel
+          annotationKind={annotationKind}
+          annotations={annotations}
+          selectedAnnotationId={selectedAnnotationId}
+          selectedPath={selectedPath}
+          onAnnotationKindChange={onAnnotationKindChange}
+          onCopyPrompt={onCopyPrompt}
+          onDelete={onDeleteAnnotation}
+          onEdit={onEditAnnotation}
+          onSelect={onSelectAnnotation}
+          onToggleResolved={onToggleAnnotationResolved}
+        />
+      )}
+    </aside>
+  );
+});
 
 export function ChangesPanel({
   files,
@@ -1073,6 +1309,409 @@ export function HistoryList({
       ))}
     </section>
   );
+}
+
+export function AnnotationsPanel({
+  annotationKind,
+  annotations,
+  onAnnotationKindChange,
+  onCopyPrompt,
+  onDelete,
+  onEdit,
+  onSelect,
+  onToggleResolved,
+  selectedAnnotationId,
+  selectedPath,
+}: {
+  annotationKind: AnnotationKind;
+  annotations: readonly Annotation[];
+  onAnnotationKindChange(kind: AnnotationKind): void;
+  onCopyPrompt(annotations: readonly Annotation[]): void;
+  onDelete(id: string): void;
+  onEdit(annotation: Annotation): void;
+  onSelect(annotation: Annotation): void;
+  onToggleResolved(annotation: Annotation): void;
+  selectedAnnotationId: string | null;
+  selectedPath: string | null;
+}) {
+  const [kindFilter, setKindFilter] = useState<AnnotationFilterKind>("all");
+  const [statusFilter, setStatusFilter] = useState<AnnotationFilterStatus>("open");
+  const [currentFileOnly, setCurrentFileOnly] = useState(false);
+  const visibleAnnotations = useMemo(
+    () =>
+      annotations.filter((annotation) => {
+        if (kindFilter !== "all" && annotation.kind !== kindFilter) {
+          return false;
+        }
+        if (statusFilter === "open" && annotation.status.state !== "open") {
+          return false;
+        }
+        return !currentFileOnly || selectedPath == null || annotation.file === selectedPath;
+      }),
+    [annotations, currentFileOnly, kindFilter, selectedPath, statusFilter],
+  );
+
+  return (
+    <section className="annotations-panel">
+      <div className="annotation-filters">
+        <div className="segmented annotation-kind-switch" aria-label="New note kind">
+          <button
+            className={annotationKind === "review" ? "active" : ""}
+            onClick={() => onAnnotationKindChange("review")}
+            title="Review note"
+            type="button"
+          >
+            <MessageSquare size={14} />
+          </button>
+          <button
+            className={annotationKind === "agent-prompt" ? "active" : ""}
+            onClick={() => onAnnotationKindChange("agent-prompt")}
+            title="Agent prompt"
+            type="button"
+          >
+            <Bot size={14} />
+          </button>
+        </div>
+        <select
+          aria-label="Annotation kind"
+          onChange={(event) => setKindFilter(parseKindFilter(event.currentTarget.value))}
+          value={kindFilter}
+        >
+          <option value="all">All kinds</option>
+          <option value="review">Review</option>
+          <option value="agent-prompt">Agent prompts</option>
+        </select>
+        <select
+          aria-label="Annotation status"
+          onChange={(event) => setStatusFilter(parseStatusFilter(event.currentTarget.value))}
+          value={statusFilter}
+        >
+          <option value="open">Open</option>
+          <option value="all">All status</option>
+        </select>
+        <label className="annotation-current-file">
+          <input
+            checked={currentFileOnly}
+            disabled={selectedPath == null}
+            onChange={() => setCurrentFileOnly((current) => !current)}
+            type="checkbox"
+          />
+          File
+        </label>
+        <button
+          className="icon-button"
+          disabled={visibleAnnotations.length === 0}
+          onClick={() => onCopyPrompt(visibleAnnotations)}
+          title="Copy prompt"
+        >
+          <Copy size={14} />
+        </button>
+      </div>
+      <div className="annotation-list">
+        {visibleAnnotations.length === 0 ? (
+          <p className="annotation-empty">No annotations</p>
+        ) : (
+          visibleAnnotations.map((annotation) => (
+            <AnnotationListItem
+              annotation={annotation}
+              key={annotation.id}
+              selected={annotation.id === selectedAnnotationId}
+              onDelete={onDelete}
+              onEdit={onEdit}
+              onSelect={onSelect}
+              onToggleResolved={onToggleResolved}
+            />
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function parseKindFilter(value: string): AnnotationFilterKind {
+  return value === "review" || value === "agent-prompt" ? value : "all";
+}
+
+function parseStatusFilter(value: string): AnnotationFilterStatus {
+  return value === "all" ? "all" : "open";
+}
+
+function AnnotationListItem({
+  annotation,
+  onDelete,
+  onEdit,
+  onSelect,
+  onToggleResolved,
+  selected,
+}: AnnotationActions & {
+  annotation: Annotation;
+  selected: boolean;
+}) {
+  return (
+    <article className={selected ? "annotation-list-item selected" : "annotation-list-item"}>
+      <button className="annotation-list-main" onClick={() => onSelect(annotation)}>
+        <span className="annotation-list-title">
+          <AnnotationKindIcon kind={annotation.kind} />
+          <span>{annotation.file}</span>
+        </span>
+        <span className="annotation-list-meta">
+          {annotation.side} {formatAnnotationLineRange(annotation)} ·{" "}
+          {formatAnnotationKind(annotation.kind)}
+          {annotation.status.state === "resolved" ? " · resolved" : ""}
+        </span>
+        <span className="annotation-list-body">{annotation.body}</span>
+      </button>
+      <AnnotationActionButtons
+        annotation={annotation}
+        onDelete={onDelete}
+        onEdit={onEdit}
+        onToggleResolved={onToggleResolved}
+      />
+    </article>
+  );
+}
+
+function InlineAnnotationCard({
+  annotation,
+  onSelect,
+  onToggleResolved,
+  selected,
+}: AnnotationActions & {
+  annotation: Annotation;
+  selected: boolean;
+}) {
+  return (
+    <article
+      className={selected ? "annotation-thread selected" : "annotation-thread"}
+      onClick={(event) => {
+        event.stopPropagation();
+        onSelect(annotation);
+      }}
+    >
+      <div className="annotation-comment">
+        <AnnotationAvatar author={annotation.author} />
+        <div className="annotation-comment-body">
+          <div className="annotation-comment-meta">
+            <strong>{annotation.author?.name ?? "You"}</strong>
+            <span>{formatAnnotationTime(annotation.createdAt)}</span>
+            <span>{formatAnnotationKind(annotation.kind)}</span>
+          </div>
+          <p>{annotation.body}</p>
+        </div>
+      </div>
+      <div className="annotation-thread-actions">
+        <button className="annotation-thread-link" type="button">
+          <CornerDownRightIcon />
+          Add reply...
+        </button>
+        <button
+          className="annotation-thread-link"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleResolved(annotation);
+          }}
+          type="button"
+        >
+          {annotation.status.state === "open" ? "Resolve" : "Reopen"}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function InlineAnnotationEditor({
+  author,
+  onCancel,
+  onSave,
+  state,
+}: {
+  author: AnnotationAuthor;
+  onCancel(): void;
+  onSave(kind: AnnotationKind, body: string): void;
+  state: AnnotationEditorState;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [kind, setKind] = useState<AnnotationKind>("review");
+  const [body, setBody] = useState("");
+
+  useEffect(() => {
+    if (state.type === "edit") {
+      setKind(state.annotation.kind);
+      setBody(state.annotation.body);
+    } else {
+      setKind(state.kind);
+      setBody("");
+    }
+
+    const frame = window.requestAnimationFrame(() => textareaRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [state]);
+
+  const canSave = body.trim().length > 0;
+
+  return (
+    <div
+      className="annotation-composer-wrap"
+      onClick={(event) => event.stopPropagation()}
+      role="presentation"
+    >
+      <div className="annotation-composer">
+        <AnnotationAvatar author={author} />
+        <div className="annotation-composer-main">
+          <textarea
+            ref={textareaRef}
+            onChange={(event) => setBody(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onCancel();
+              }
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && canSave) {
+                event.preventDefault();
+                onSave(kind, body);
+              }
+            }}
+            placeholder={
+              kind === "agent-prompt" ? "Tell the agent what to do..." : "Leave a comment"
+            }
+            rows={3}
+            value={body}
+          />
+          <div className="annotation-composer-footer">
+            <button
+              className="annotation-submit-button"
+              disabled={!canSave}
+              onClick={() => onSave(kind, body)}
+              type="button"
+            >
+              Comment
+            </button>
+            <button className="annotation-cancel-button" onClick={onCancel} type="button">
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AnnotationActionButtons({
+  annotation,
+  onDelete,
+  onEdit,
+  onToggleResolved,
+}: {
+  annotation: Annotation;
+  onDelete(id: string): void;
+  onEdit(annotation: Annotation): void;
+  onToggleResolved(annotation: Annotation): void;
+}) {
+  return (
+    <div className="annotation-actions">
+      <button
+        aria-label={annotation.status.state === "open" ? "Resolve annotation" : "Reopen annotation"}
+        className="icon-button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleResolved(annotation);
+        }}
+        title={annotation.status.state === "open" ? "Resolve" : "Reopen"}
+      >
+        <Check size={13} />
+      </button>
+      <button
+        aria-label="Edit annotation"
+        className="icon-button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onEdit(annotation);
+        }}
+        title="Edit"
+      >
+        <Edit3 size={13} />
+      </button>
+      <button
+        aria-label="Delete annotation"
+        className="icon-button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onDelete(annotation.id);
+        }}
+        title="Delete"
+      >
+        <Trash2 size={13} />
+      </button>
+    </div>
+  );
+}
+
+function AnnotationAvatar({ author }: { author?: AnnotationAuthor }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const avatarUrl = imageFailed ? null : (author?.avatarUrl ?? null);
+  if (avatarUrl != null) {
+    return (
+      <img
+        alt=""
+        className="annotation-avatar"
+        onError={() => setImageFailed(true)}
+        src={avatarUrl}
+      />
+    );
+  }
+  const label = author?.name ?? "You";
+  return (
+    <span className="annotation-avatar" aria-hidden="true">
+      {label.slice(0, 1)}
+    </span>
+  );
+}
+
+function CornerDownRightIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" height="14" viewBox="0 0 16 16" width="14">
+      <path
+        d="M4 3v4.5A2.5 2.5 0 0 0 6.5 10H12m0 0-3-3m3 3-3 3"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.6"
+      />
+    </svg>
+  );
+}
+
+function formatAnnotationTime(createdAt: string): string {
+  const timestamp = Date.parse(createdAt);
+  if (!Number.isFinite(timestamp)) {
+    return "now";
+  }
+  const elapsedMinutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+  if (elapsedMinutes < 1) {
+    return "now";
+  }
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m`;
+  }
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return `${elapsedHours}h`;
+  }
+  return `${Math.floor(elapsedHours / 24)}d`;
+}
+
+function formatAnnotationLineRange(annotation: Annotation): string {
+  return annotation.lineStart === annotation.lineEnd
+    ? `L${annotation.lineStart}`
+    : `L${annotation.lineStart}-${annotation.lineEnd}`;
+}
+
+function AnnotationKindIcon({ kind }: { kind: AnnotationKind }) {
+  return kind === "agent-prompt" ? <Bot size={13} /> : <MessageSquare size={13} />;
+}
+
+function formatAnnotationKind(kind: AnnotationKind): string {
+  return kind === "agent-prompt" ? "Agent prompt" : "Review";
 }
 
 function FileGroup({
@@ -1338,41 +1977,277 @@ function DelayedPopover({ children, label }: { children: ReactNode; label: strin
   );
 }
 
-export function DiffPreviewList({
+export const DiffPanel = memo(function DiffPanel({
+  allCollapsed,
+  annotationAuthor,
+  annotationEditor,
+  annotations,
+  collapsedPaths,
+  comparison,
+  diffPanelRef,
+  effectiveViewMode,
+  info,
+  isDiffPanelNarrow,
+  leftWidth,
+  onAddAnnotation,
+  onCancelAnnotation,
+  onChangeComparison,
+  onDeleteAnnotation,
+  onEditAnnotation,
+  onExpandContext,
+  onOpenFile,
+  onResize,
+  onSaveAnnotation,
+  onSelect,
+  onSelectAnnotation,
+  onToggleAnnotationResolved,
+  onToggleAllPreviews,
+  onTogglePreview,
+  onToggleRead,
+  onViewModeChange,
+  previewPaths,
+  previews,
+  readPaths,
+  selectedAnnotationId,
+  selectedPath,
+}: {
+  allCollapsed: boolean;
+  annotationAuthor: AnnotationAuthor;
+  annotationEditor: AnnotationEditorState | null;
+  annotations: readonly Annotation[];
+  collapsedPaths: ReadonlySet<string>;
+  comparison: DiffComparison;
+  diffPanelRef: RefObject<HTMLElement | null>;
+  effectiveViewMode: ViewMode;
+  info: RepoInfo;
+  isDiffPanelNarrow: boolean;
+  leftWidth: number;
+  onAddAnnotation(anchor: AnnotationAnchor, mode: AnnotationSelectionMode): void;
+  onCancelAnnotation(): void;
+  onChangeComparison(comparison: DiffComparison): void;
+  onDeleteAnnotation(id: string): void;
+  onEditAnnotation(annotation: Annotation): void;
+  onExpandContext(path: string): void;
+  onOpenFile(path: string): void;
+  onResize(width: number): void;
+  onSaveAnnotation(kind: AnnotationKind, body: string): void;
+  onSelect(path: string): void;
+  onSelectAnnotation(annotation: Annotation): void;
+  onToggleAnnotationResolved(annotation: Annotation): void;
+  onToggleAllPreviews(): void;
+  onTogglePreview(path: string): void;
+  onToggleRead(path: string): void;
+  onViewModeChange(mode: ViewMode): void;
+  previewPaths: readonly string[];
+  previews: readonly DiffPreview[];
+  readPaths: ReadonlySet<string>;
+  selectedAnnotationId: string | null;
+  selectedPath: string | null;
+}) {
+  return (
+    <section className="diff-panel" ref={diffPanelRef}>
+      <div className="diff-toolbar">
+        <button
+          className="icon-button"
+          disabled={previewPaths.length === 0}
+          title={allCollapsed ? "Expand previews" : "Collapse previews"}
+          onClick={onToggleAllPreviews}
+        >
+          {allCollapsed ? <ChevronsUpDown size={16} /> : <ChevronsDownUp size={16} />}
+        </button>
+        <div className="segmented" aria-label="Diff layout">
+          <button
+            className={effectiveViewMode === "stacked" ? "active" : ""}
+            onClick={() => onViewModeChange("stacked")}
+            title="Stacked diff"
+          >
+            <Rows3 size={16} />
+          </button>
+          <button
+            className={effectiveViewMode === "split" ? "active" : ""}
+            disabled={isDiffPanelNarrow}
+            onClick={() => onViewModeChange("split")}
+            title={isDiffPanelNarrow ? "Split diff needs more width" : "Split diff"}
+          >
+            <Columns2 size={16} />
+          </button>
+        </div>
+        <div className="toolbar-spacer" />
+        <ComparisonControls comparison={comparison} info={info} onChange={onChangeComparison} />
+      </div>
+      <DiffPreviewList
+        annotationAuthor={annotationAuthor}
+        previews={previews}
+        annotationEditor={annotationEditor}
+        annotations={annotations}
+        collapsedPaths={collapsedPaths}
+        comparison={comparison}
+        readPaths={readPaths}
+        selectedAnnotationId={selectedAnnotationId}
+        selectedPath={selectedPath}
+        leftWidth={leftWidth}
+        mode={effectiveViewMode}
+        onAddAnnotation={onAddAnnotation}
+        onCancelAnnotation={onCancelAnnotation}
+        onDeleteAnnotation={onDeleteAnnotation}
+        onEditAnnotation={onEditAnnotation}
+        onOpenFile={onOpenFile}
+        onExpandContext={onExpandContext}
+        onResize={onResize}
+        onSelectAnnotation={onSelectAnnotation}
+        onSaveAnnotation={onSaveAnnotation}
+        onSelect={onSelect}
+        onToggleAnnotationResolved={onToggleAnnotationResolved}
+        onTogglePreview={onTogglePreview}
+        onToggleRead={onToggleRead}
+      />
+    </section>
+  );
+});
+
+export const DiffPreviewList = memo(function DiffPreviewList({
+  annotationAuthor,
+  annotationEditor,
+  annotations,
   collapsedPaths,
   comparison,
   leftWidth,
   mode,
+  onAddAnnotation,
+  onCancelAnnotation,
+  onDeleteAnnotation,
+  onEditAnnotation,
   onOpenFile,
   onExpandContext,
   onResize,
+  onSelectAnnotation,
+  onSaveAnnotation,
   onSelect,
+  onToggleAnnotationResolved,
   onTogglePreview,
   onToggleRead,
   previews,
   readPaths,
+  selectedAnnotationId,
   selectedPath,
 }: {
+  annotationAuthor: AnnotationAuthor;
+  annotationEditor: AnnotationEditorState | null;
+  annotations: readonly Annotation[];
   collapsedPaths: ReadonlySet<string>;
   comparison: DiffComparison;
   leftWidth: number;
   mode: ViewMode;
+  onAddAnnotation(anchor: AnnotationAnchor, mode: AnnotationSelectionMode): void;
+  onCancelAnnotation(): void;
+  onDeleteAnnotation(id: string): void;
+  onEditAnnotation(annotation: Annotation): void;
   onOpenFile(path: string): void;
   onExpandContext(path: string): void;
   onResize(width: number): void;
+  onSelectAnnotation(annotation: Annotation): void;
+  onSaveAnnotation(kind: AnnotationKind, body: string): void;
   onSelect(path: string): void;
+  onToggleAnnotationResolved(annotation: Annotation): void;
   onTogglePreview(path: string): void;
   onToggleRead(path: string): void;
   previews: readonly DiffPreview[];
   readPaths: ReadonlySet<string>;
+  selectedAnnotationId: string | null;
   selectedPath: string | null;
 }) {
   const previewRefs = useRef(new Map<string, HTMLElement>());
+  const [annotationDragActive, setAnnotationDragActive] = useState(false);
+  const annotationDragRef = useRef<AnnotationDragState | null>(null);
   const scrollAnchorRef = useRef<{
     element: HTMLElement;
     scrollContainer: HTMLElement;
     top: number;
   } | null>(null);
+  const annotationsByAnchor = useMemo(() => groupAnnotationsByAnchor(annotations), [annotations]);
+  const annotationDragController = useMemo<AnnotationDragController>(
+    () => ({
+      end(pointerId) {
+        const active = annotationDragRef.current;
+        if (active?.pointerId === pointerId) {
+          if (active.frameId != null) {
+            window.cancelAnimationFrame(active.frameId);
+          }
+          clearAnnotationDragPreview(active);
+          annotationDragRef.current = null;
+          onAddAnnotation(active.finalAnchor, active.mode === "extend" ? "extend" : "range");
+        }
+        setAnnotationDragActive(false);
+      },
+      enter(anchor) {
+        const active = annotationDragRef.current;
+        if (active == null || active.file !== anchor.file || active.side !== anchor.side) {
+          return;
+        }
+        if (active.lastLine === anchor.lineStart) {
+          return;
+        }
+        active.lastLine = anchor.lineStart;
+        active.finalAnchor = getAnnotationDragRange(active, anchor);
+        renderAnnotationDragPreview(active);
+      },
+      move(clientX, clientY, pointerId) {
+        const active = annotationDragRef.current;
+        if (active == null || active.pointerId !== pointerId) {
+          return;
+        }
+        active.pendingPosition = { clientX, clientY };
+        if (active.frameId != null) {
+          return;
+        }
+        active.frameId = window.requestAnimationFrame(() => {
+          const latest = annotationDragRef.current;
+          if (latest == null || latest.pointerId !== pointerId) {
+            return;
+          }
+          latest.frameId = null;
+          const position = latest.pendingPosition;
+          latest.pendingPosition = null;
+          if (position == null) {
+            return;
+          }
+          const target = document.elementFromPoint(position.clientX, position.clientY);
+          if (target == null) {
+            return;
+          }
+          const anchor = getAnnotationAnchorFromGutterTarget(target);
+          if (anchor == null || anchor.file !== latest.file || anchor.side !== latest.side) {
+            return;
+          }
+          if (latest.lastLine === anchor.lineStart) {
+            return;
+          }
+          latest.lastLine = anchor.lineStart;
+          latest.finalAnchor = getAnnotationDragRange(latest, anchor);
+          renderAnnotationDragPreview(latest);
+        });
+      },
+      start(anchor, pointerId, mode) {
+        const nextDrag: AnnotationDragState = {
+          candidates: collectAnnotationDragCandidates(anchor),
+          finalAnchor: anchor,
+          frameId: null,
+          file: anchor.file,
+          lastLine: anchor.lineStart,
+          mode,
+          pendingPosition: null,
+          pointerId,
+          previewElements: new Set(),
+          side: anchor.side,
+          startLine: anchor.lineStart,
+        };
+        annotationDragRef.current = nextDrag;
+        setAnnotationDragActive(true);
+        renderAnnotationDragPreview(nextDrag);
+      },
+    }),
+    [onAddAnnotation],
+  );
 
   function togglePreview(path: string, isCollapsed: boolean) {
     onTogglePreview(path);
@@ -1422,76 +2297,193 @@ export function DiffPreviewList({
   }
 
   return (
-    <section className="diff-body" style={getDiffBodyStyle(leftWidth)}>
-      {previews.map((preview) => {
-        const isCollapsed = collapsedPaths.has(preview.file.path);
-        return (
-          <section
-            className={
-              preview.file.path === selectedPath ? "file-preview selected" : "file-preview"
-            }
-            key={preview.file.path}
-            ref={(element) => {
-              if (element == null) {
-                previewRefs.current.delete(preview.file.path);
-              } else {
-                previewRefs.current.set(preview.file.path, element);
+    <AnnotationDragContext.Provider value={annotationDragController}>
+      <section
+        className={annotationDragActive ? "diff-body annotation-dragging" : "diff-body"}
+        style={getDiffBodyStyle(leftWidth)}
+      >
+        {previews.map((preview) => {
+          const isCollapsed = collapsedPaths.has(preview.file.path);
+          return (
+            <section
+              className={
+                preview.file.path === selectedPath ? "file-preview selected" : "file-preview"
               }
-            }}
-          >
-            <header className="file-preview-header">
-              <button
-                className="preview-toggle"
-                onClick={() => togglePreview(preview.file.path, isCollapsed)}
-                title={isCollapsed ? "Expand file preview" : "Collapse file preview"}
-              >
-                {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-              </button>
-              <input
-                aria-label={`Mark ${preview.file.path} read`}
-                checked={readPaths.has(preview.file.path)}
-                className="read-check"
-                onChange={() => onToggleRead(preview.file.path)}
-                type="checkbox"
-              />
-              <FileCode2 size={15} />
-              <button
-                className="preview-file-button"
-                onClick={() => onSelect(preview.file.path)}
-                title={preview.file.path}
-              >
-                <strong>{getBasename(preview.file.path)}</strong>
-              </button>
-              <span className="file-dir">{getDirectory(preview.file.path)}</span>
-              <span className="preview-stats">
-                <span className="positive">+{preview.file.added}</span>
-                <span className="negative">-{preview.file.deleted}</span>
-              </span>
-              <DelayedPopover label="Open File">
+              key={preview.file.path}
+              ref={(element) => {
+                if (element == null) {
+                  previewRefs.current.delete(preview.file.path);
+                } else {
+                  previewRefs.current.set(preview.file.path, element);
+                }
+              }}
+            >
+              <header className="file-preview-header">
                 <button
-                  aria-label="Open file"
-                  className="toolbar-button toolbar-button-icon"
-                  onClick={() => onOpenFile(preview.file.path)}
+                  className="preview-toggle"
+                  onClick={() => togglePreview(preview.file.path, isCollapsed)}
+                  title={isCollapsed ? "Expand file preview" : "Collapse file preview"}
                 >
-                  <ExternalLink size={14} />
+                  {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
                 </button>
-              </DelayedPopover>
-            </header>
-            {isCollapsed ? null : (
-              <DiffView
-                comparison={comparison}
-                diffPreview={preview}
-                leftWidth={leftWidth}
-                mode={mode}
-                onExpandContext={(anchorElement) => expandContext(preview.file.path, anchorElement)}
-                onResize={onResize}
-              />
-            )}
-          </section>
-        );
-      })}
-    </section>
+                <input
+                  aria-label={`Mark ${preview.file.path} read`}
+                  checked={readPaths.has(preview.file.path)}
+                  className="read-check"
+                  onChange={() => onToggleRead(preview.file.path)}
+                  type="checkbox"
+                />
+                <FileCode2 size={15} />
+                <button
+                  className="preview-file-button"
+                  onClick={() => onSelect(preview.file.path)}
+                  title={preview.file.path}
+                >
+                  <strong>{getBasename(preview.file.path)}</strong>
+                </button>
+                <span className="file-dir">{getDirectory(preview.file.path)}</span>
+                <span className="preview-stats">
+                  <span className="positive">+{preview.file.added}</span>
+                  <span className="negative">-{preview.file.deleted}</span>
+                </span>
+                <DelayedPopover label="Open File">
+                  <button
+                    aria-label="Open file"
+                    className="toolbar-button toolbar-button-icon"
+                    onClick={() => onOpenFile(preview.file.path)}
+                  >
+                    <ExternalLink size={14} />
+                  </button>
+                </DelayedPopover>
+              </header>
+              {isCollapsed ? null : (
+                <DiffView
+                  annotationEditor={annotationEditor}
+                  annotationAuthor={annotationAuthor}
+                  annotationsByAnchor={annotationsByAnchor}
+                  comparison={comparison}
+                  diffPreview={preview}
+                  leftWidth={leftWidth}
+                  mode={mode}
+                  onAddAnnotation={onAddAnnotation}
+                  onCancelAnnotation={onCancelAnnotation}
+                  onDeleteAnnotation={onDeleteAnnotation}
+                  onEditAnnotation={onEditAnnotation}
+                  onExpandContext={(anchorElement) =>
+                    expandContext(preview.file.path, anchorElement)
+                  }
+                  onResize={onResize}
+                  onSelectAnnotation={onSelectAnnotation}
+                  onSaveAnnotation={onSaveAnnotation}
+                  onToggleAnnotationResolved={onToggleAnnotationResolved}
+                  selectedAnnotationId={selectedAnnotationId}
+                />
+              )}
+            </section>
+          );
+        })}
+      </section>
+    </AnnotationDragContext.Provider>
   );
+});
+
+function groupAnnotationsByAnchor(
+  annotations: readonly Annotation[],
+): ReadonlyMap<string, readonly Annotation[]> {
+  const groups = new Map<string, Annotation[]>();
+  for (const annotation of annotations) {
+    for (let line = annotation.lineStart; line <= annotation.lineEnd; line += 1) {
+      const key = getAnnotationAnchorKey(annotation.file, line, annotation.side);
+      const existing = groups.get(key);
+      if (existing == null) {
+        groups.set(key, [annotation]);
+      } else {
+        existing.push(annotation);
+      }
+    }
+  }
+  return groups;
+}
+
+function getAnnotationDragRange(
+  active: AnnotationDragState,
+  anchor: AnnotationAnchor,
+): AnnotationAnchor {
+  return {
+    file: active.file,
+    lineStart: Math.min(active.startLine, anchor.lineStart),
+    lineEnd: Math.max(active.startLine, anchor.lineStart),
+    side: active.side,
+  };
+}
+
+function renderAnnotationDragPreview(active: AnnotationDragState): void {
+  clearAnnotationDragPreview(active);
+  const start = active.finalAnchor.lineStart;
+  const end = active.finalAnchor.lineEnd;
+  for (const candidate of active.candidates) {
+    if (candidate.line < start || candidate.line > end) {
+      continue;
+    }
+    candidate.cell.classList.add("annotation-drag-preview");
+    active.previewElements.add(candidate.cell);
+  }
+}
+
+function clearAnnotationDragPreview(active: AnnotationDragState): void {
+  for (const element of active.previewElements) {
+    element.classList.remove("annotation-drag-preview");
+  }
+  active.previewElements.clear();
+}
+
+function collectAnnotationDragCandidates(
+  anchor: AnnotationAnchor,
+): readonly AnnotationDragCandidate[] {
+  const candidates: AnnotationDragCandidate[] = [];
+  const gutters = document.querySelectorAll(".line-number[data-annotation-line]");
+  for (const gutter of gutters) {
+    if (!(gutter instanceof HTMLElement)) {
+      continue;
+    }
+    const file = gutter.getAttribute("data-annotation-file");
+    const line = parseAnnotationGutterLine(gutter.getAttribute("data-annotation-line"));
+    const side = parseAnnotationGutterSide(gutter.getAttribute("data-annotation-side"));
+    if (file !== anchor.file || side !== anchor.side || line == null) {
+      continue;
+    }
+    const cell = gutter.closest(".code-cell");
+    if (cell instanceof HTMLElement) {
+      candidates.push({ cell, line });
+    }
+  }
+  return candidates;
+}
+
+function getAnnotationAnchorFromGutterTarget(target: Element): AnnotationAnchor | null {
+  const gutter = target.closest(".line-number");
+  if (!(gutter instanceof HTMLElement)) {
+    return null;
+  }
+  const file = gutter.getAttribute("data-annotation-file");
+  const line = parseAnnotationGutterLine(gutter.getAttribute("data-annotation-line"));
+  const side = parseAnnotationGutterSide(gutter.getAttribute("data-annotation-side"));
+  if (file == null || line == null || side == null) {
+    return null;
+  }
+  return { file, lineStart: line, lineEnd: line, side };
+}
+
+function parseAnnotationGutterLine(value: string | null): number | null {
+  if (value == null) {
+    return null;
+  }
+  const line = Number.parseInt(value, 10);
+  return Number.isInteger(line) && line > 0 ? line : null;
+}
+
+function parseAnnotationGutterSide(value: string | null): AnnotationSide | null {
+  return value === "old" || value === "new" ? value : null;
 }
 
 function getDiffBodyStyle(leftWidth: number): DiffBodyStyle {
@@ -1499,19 +2491,41 @@ function getDiffBodyStyle(leftWidth: number): DiffBodyStyle {
 }
 
 function DiffView({
+  annotationAuthor,
+  annotationEditor,
+  annotationsByAnchor,
   comparison,
   diffPreview,
   leftWidth,
   mode,
+  onAddAnnotation,
+  onCancelAnnotation,
+  onDeleteAnnotation,
+  onEditAnnotation,
   onExpandContext,
   onResize,
+  onSelectAnnotation,
+  onSaveAnnotation,
+  onToggleAnnotationResolved,
+  selectedAnnotationId,
 }: {
+  annotationAuthor: AnnotationAuthor;
+  annotationEditor: AnnotationEditorState | null;
+  annotationsByAnchor: ReadonlyMap<string, readonly Annotation[]>;
   comparison: DiffComparison;
   diffPreview: DiffPreview;
   leftWidth: number;
   mode: ViewMode;
+  onAddAnnotation(anchor: AnnotationAnchor, mode: AnnotationSelectionMode): void;
+  onCancelAnnotation(): void;
+  onDeleteAnnotation(id: string): void;
+  onEditAnnotation(annotation: Annotation): void;
   onExpandContext(anchorElement: HTMLElement): void;
   onResize(width: number): void;
+  onSelectAnnotation(annotation: Annotation): void;
+  onSaveAnnotation(kind: AnnotationKind, body: string): void;
+  onToggleAnnotationResolved(annotation: Annotation): void;
+  selectedAnnotationId: string | null;
 }) {
   const [renderMode, setRenderMode] = useState<FileRenderMode>("preview");
   const readyDiff = diffPreview.type === "ready" ? diffPreview.diff : null;
@@ -1565,11 +2579,23 @@ function DiffView({
       ) : null}
       <HighlightContext.Provider value={highlight}>
         <DiffHunkList
+          annotationAuthor={annotationAuthor}
+          annotationEditor={annotationEditor}
+          annotationsByAnchor={annotationsByAnchor}
+          filePath={diff.path}
           hunks={diff.hunks}
           leftWidth={leftWidth}
           mode={mode}
+          onAddAnnotation={onAddAnnotation}
+          onCancelAnnotation={onCancelAnnotation}
+          onDeleteAnnotation={onDeleteAnnotation}
+          onEditAnnotation={onEditAnnotation}
           onExpandContext={onExpandContext}
           onResize={onResize}
+          onSelectAnnotation={onSelectAnnotation}
+          onSaveAnnotation={onSaveAnnotation}
+          onToggleAnnotationResolved={onToggleAnnotationResolved}
+          selectedAnnotationId={selectedAnnotationId}
         />
       </HighlightContext.Provider>
     </>
@@ -1684,24 +2710,83 @@ function ImageDiffPreview({
 // memoizing keeps unrelated re-renders (e.g. the diff panel reflowing while the
 // sidebar is dragged) from walking every row.
 const HunkView = memo(function HunkView({
+  annotationAuthor,
+  annotationEditor,
+  annotationsByAnchor,
+  filePath,
   hunk,
   leftWidth,
   mode,
+  onAddAnnotation,
+  onCancelAnnotation,
+  onDeleteAnnotation,
+  onEditAnnotation,
   onResize,
+  onSelectAnnotation,
+  onSaveAnnotation,
+  onToggleAnnotationResolved,
+  selectedAnnotationId,
 }: {
+  annotationAuthor: AnnotationAuthor;
+  annotationEditor: AnnotationEditorState | null;
+  annotationsByAnchor: ReadonlyMap<string, readonly Annotation[]>;
+  filePath: string;
   hunk: DiffHunk;
   leftWidth: number;
   mode: ViewMode;
+  onAddAnnotation(anchor: AnnotationAnchor, mode: AnnotationSelectionMode): void;
+  onCancelAnnotation(): void;
+  onDeleteAnnotation(id: string): void;
+  onEditAnnotation(annotation: Annotation): void;
   onResize(width: number): void;
+  onSelectAnnotation(annotation: Annotation): void;
+  onSaveAnnotation(kind: AnnotationKind, body: string): void;
+  onToggleAnnotationResolved(annotation: Annotation): void;
+  selectedAnnotationId: string | null;
 }) {
+  const annotationActions: AnnotationActions = {
+    onDelete: onDeleteAnnotation,
+    onEdit: onEditAnnotation,
+    onSelect: onSelectAnnotation,
+    onToggleResolved: onToggleAnnotationResolved,
+  };
   if (mode === "stacked") {
-    return <section className="hunk">{hunk.rows.flatMap((row) => renderStackedRow(row))}</section>;
+    return (
+      <section className="hunk">
+        {hunk.rows.flatMap((row) =>
+          renderStackedRow({
+            annotationAuthor,
+            annotationEditor,
+            annotationsByAnchor,
+            annotationActions,
+            filePath,
+            onAddAnnotation,
+            onCancelAnnotation,
+            row,
+            onSaveAnnotation,
+            selectedAnnotationId,
+          }),
+        )}
+      </section>
+    );
   }
 
   return (
     <section className="hunk split-hunk">
       {hunk.rows.map((row) => (
-        <SplitRow key={lineKey(row)} row={row} />
+        <SplitRow
+          annotationEditor={annotationEditor}
+          annotationAuthor={annotationAuthor}
+          annotationsByAnchor={annotationsByAnchor}
+          annotationActions={annotationActions}
+          filePath={filePath}
+          key={lineKey(row)}
+          onAddAnnotation={onAddAnnotation}
+          onCancelAnnotation={onCancelAnnotation}
+          row={row}
+          onSaveAnnotation={onSaveAnnotation}
+          selectedAnnotationId={selectedAnnotationId}
+        />
       ))}
       <SplitResizeHandle max={72} min={28} onResize={onResize} value={leftWidth} />
     </section>
@@ -1709,17 +2794,41 @@ const HunkView = memo(function HunkView({
 });
 
 function DiffHunkList({
+  annotationAuthor,
+  annotationEditor,
+  annotationsByAnchor,
+  filePath,
   hunks,
   leftWidth,
   mode,
+  onAddAnnotation,
+  onCancelAnnotation,
+  onDeleteAnnotation,
+  onEditAnnotation,
   onExpandContext,
   onResize,
+  onSelectAnnotation,
+  onSaveAnnotation,
+  onToggleAnnotationResolved,
+  selectedAnnotationId,
 }: {
+  annotationAuthor: AnnotationAuthor;
+  annotationEditor: AnnotationEditorState | null;
+  annotationsByAnchor: ReadonlyMap<string, readonly Annotation[]>;
+  filePath: string;
   hunks: readonly DiffHunk[];
   leftWidth: number;
   mode: ViewMode;
+  onAddAnnotation(anchor: AnnotationAnchor, mode: AnnotationSelectionMode): void;
+  onCancelAnnotation(): void;
+  onDeleteAnnotation(id: string): void;
+  onEditAnnotation(annotation: Annotation): void;
   onExpandContext(anchorElement: HTMLElement): void;
   onResize(width: number): void;
+  onSelectAnnotation(annotation: Annotation): void;
+  onSaveAnnotation(kind: AnnotationKind, body: string): void;
+  onToggleAnnotationResolved(annotation: Annotation): void;
+  selectedAnnotationId: string | null;
 }) {
   const nodes: ReactNode[] = [];
   let previous: DiffHunk | null = null;
@@ -1737,11 +2846,23 @@ function DiffHunkList({
     }
     nodes.push(
       <HunkView
+        annotationAuthor={annotationAuthor}
+        annotationEditor={annotationEditor}
+        annotationsByAnchor={annotationsByAnchor}
+        filePath={filePath}
         key={`hunk-${getHunkChangeKey(hunk)}`}
         hunk={hunk}
         leftWidth={leftWidth}
         mode={mode}
+        onAddAnnotation={onAddAnnotation}
+        onCancelAnnotation={onCancelAnnotation}
+        onDeleteAnnotation={onDeleteAnnotation}
+        onEditAnnotation={onEditAnnotation}
         onResize={onResize}
+        onSelectAnnotation={onSelectAnnotation}
+        onSaveAnnotation={onSaveAnnotation}
+        onToggleAnnotationResolved={onToggleAnnotationResolved}
+        selectedAnnotationId={selectedAnnotationId}
       />,
     );
     previous = hunk;
@@ -1872,69 +2993,241 @@ function SplitResizeHandle({
   );
 }
 
-function SplitRow({ row }: { row: SplitDiffRow }) {
+function SplitRow({
+  annotationAuthor,
+  annotationEditor,
+  annotationsByAnchor,
+  annotationActions,
+  filePath,
+  onAddAnnotation,
+  onCancelAnnotation,
+  row,
+  onSaveAnnotation,
+  selectedAnnotationId,
+}: {
+  annotationAuthor: AnnotationAuthor;
+  annotationEditor: AnnotationEditorState | null;
+  annotationsByAnchor: ReadonlyMap<string, readonly Annotation[]>;
+  annotationActions: AnnotationActions;
+  filePath: string;
+  onAddAnnotation(anchor: AnnotationAnchor, mode: AnnotationSelectionMode): void;
+  onCancelAnnotation(): void;
+  row: SplitDiffRow;
+  onSaveAnnotation(kind: AnnotationKind, body: string): void;
+  selectedAnnotationId: string | null;
+}) {
   if (row.kind === "context") {
     return (
       <div className="split-row">
-        <CodeCell side="old" tokenSide="old" line={row.oldLine} content={row.text} tone="context" />
-        <CodeCell side="new" tokenSide="new" line={row.newLine} content={row.text} tone="context" />
+        <CodeCell
+          annotationEditor={annotationEditor}
+          annotationAuthor={annotationAuthor}
+          annotationsByAnchor={annotationsByAnchor}
+          annotationActions={annotationActions}
+          annotationSide="old"
+          filePath={filePath}
+          side="old"
+          tokenSide="old"
+          line={row.oldLine}
+          content={row.text}
+          tone="context"
+          onAddAnnotation={onAddAnnotation}
+          onCancelAnnotation={onCancelAnnotation}
+          onSaveAnnotation={onSaveAnnotation}
+          selectedAnnotationId={selectedAnnotationId}
+        />
+        <CodeCell
+          annotationEditor={annotationEditor}
+          annotationAuthor={annotationAuthor}
+          annotationsByAnchor={annotationsByAnchor}
+          annotationActions={annotationActions}
+          annotationSide="new"
+          filePath={filePath}
+          side="new"
+          tokenSide="new"
+          line={row.newLine}
+          content={row.text}
+          tone="context"
+          onAddAnnotation={onAddAnnotation}
+          onCancelAnnotation={onCancelAnnotation}
+          onSaveAnnotation={onSaveAnnotation}
+          selectedAnnotationId={selectedAnnotationId}
+        />
       </div>
     );
   }
   if (row.kind === "delete") {
     return (
       <div className="split-row">
-        <CodeCell side="old" tokenSide="old" line={row.oldLine} content={row.text} tone="delete" />
-        <CodeCell side="new" line={null} content="" tone="empty" />
+        <CodeCell
+          annotationEditor={annotationEditor}
+          annotationAuthor={annotationAuthor}
+          annotationsByAnchor={annotationsByAnchor}
+          annotationActions={annotationActions}
+          annotationSide="old"
+          filePath={filePath}
+          side="old"
+          tokenSide="old"
+          line={row.oldLine}
+          content={row.text}
+          tone="delete"
+          onAddAnnotation={onAddAnnotation}
+          onCancelAnnotation={onCancelAnnotation}
+          onSaveAnnotation={onSaveAnnotation}
+          selectedAnnotationId={selectedAnnotationId}
+        />
+        <CodeCell
+          annotationEditor={annotationEditor}
+          annotationAuthor={annotationAuthor}
+          annotationsByAnchor={annotationsByAnchor}
+          annotationActions={annotationActions}
+          filePath={filePath}
+          side="new"
+          line={null}
+          content=""
+          tone="empty"
+          onAddAnnotation={onAddAnnotation}
+          onCancelAnnotation={onCancelAnnotation}
+          onSaveAnnotation={onSaveAnnotation}
+          selectedAnnotationId={selectedAnnotationId}
+        />
       </div>
     );
   }
   if (row.kind === "add") {
     return (
       <div className="split-row">
-        <CodeCell side="old" line={null} content="" tone="empty" />
-        <CodeCell side="new" tokenSide="new" line={row.newLine} content={row.text} tone="add" />
+        <CodeCell
+          annotationEditor={annotationEditor}
+          annotationAuthor={annotationAuthor}
+          annotationsByAnchor={annotationsByAnchor}
+          annotationActions={annotationActions}
+          filePath={filePath}
+          side="old"
+          line={null}
+          content=""
+          tone="empty"
+          onAddAnnotation={onAddAnnotation}
+          onCancelAnnotation={onCancelAnnotation}
+          onSaveAnnotation={onSaveAnnotation}
+          selectedAnnotationId={selectedAnnotationId}
+        />
+        <CodeCell
+          annotationEditor={annotationEditor}
+          annotationAuthor={annotationAuthor}
+          annotationsByAnchor={annotationsByAnchor}
+          annotationActions={annotationActions}
+          annotationSide="new"
+          filePath={filePath}
+          side="new"
+          tokenSide="new"
+          line={row.newLine}
+          content={row.text}
+          tone="add"
+          onAddAnnotation={onAddAnnotation}
+          onCancelAnnotation={onCancelAnnotation}
+          onSaveAnnotation={onSaveAnnotation}
+          selectedAnnotationId={selectedAnnotationId}
+        />
       </div>
     );
   }
   return (
     <div className="split-row">
       <CodeCell
+        annotationEditor={annotationEditor}
+        annotationAuthor={annotationAuthor}
+        annotationsByAnchor={annotationsByAnchor}
+        annotationActions={annotationActions}
+        annotationSide="old"
+        filePath={filePath}
         side="old"
         tokenSide="old"
         line={row.oldLine}
         content={row.oldText}
         tone="delete"
         wordFragments={getInlineFragments(row.oldText, row.newText, "old")}
+        onAddAnnotation={onAddAnnotation}
+        onCancelAnnotation={onCancelAnnotation}
+        onSaveAnnotation={onSaveAnnotation}
+        selectedAnnotationId={selectedAnnotationId}
       />
       <CodeCell
+        annotationEditor={annotationEditor}
+        annotationAuthor={annotationAuthor}
+        annotationsByAnchor={annotationsByAnchor}
+        annotationActions={annotationActions}
+        annotationSide="new"
+        filePath={filePath}
         side="new"
         tokenSide="new"
         line={row.newLine}
         content={row.newText}
         tone="add"
         wordFragments={getInlineFragments(row.oldText, row.newText, "new")}
+        onAddAnnotation={onAddAnnotation}
+        onCancelAnnotation={onCancelAnnotation}
+        onSaveAnnotation={onSaveAnnotation}
+        selectedAnnotationId={selectedAnnotationId}
       />
     </div>
   );
 }
 
-function renderStackedRow(row: SplitDiffRow) {
+function renderStackedRow({
+  annotationAuthor,
+  annotationEditor,
+  annotationsByAnchor,
+  annotationActions,
+  filePath,
+  onAddAnnotation,
+  onCancelAnnotation,
+  onSaveAnnotation,
+  row,
+  selectedAnnotationId,
+}: {
+  annotationAuthor: AnnotationAuthor;
+  annotationEditor: AnnotationEditorState | null;
+  annotationsByAnchor: ReadonlyMap<string, readonly Annotation[]>;
+  annotationActions: AnnotationActions;
+  filePath: string;
+  onAddAnnotation(anchor: AnnotationAnchor, mode: AnnotationSelectionMode): void;
+  onCancelAnnotation(): void;
+  onSaveAnnotation(kind: AnnotationKind, body: string): void;
+  row: SplitDiffRow;
+  selectedAnnotationId: string | null;
+}) {
   if (row.kind === "context") {
     return [
       <CodeCell
+        annotationEditor={annotationEditor}
+        annotationAuthor={annotationAuthor}
+        annotationsByAnchor={annotationsByAnchor}
+        annotationActions={annotationActions}
+        annotationSide="new"
+        filePath={filePath}
         key={lineKey(row)}
         side="both"
         tokenSide="new"
         line={row.newLine}
         content={row.text}
         tone="context"
+        onAddAnnotation={onAddAnnotation}
+        onCancelAnnotation={onCancelAnnotation}
+        onSaveAnnotation={onSaveAnnotation}
+        selectedAnnotationId={selectedAnnotationId}
       />,
     ];
   }
   if (row.kind === "delete") {
     return [
       <CodeCell
+        annotationEditor={annotationEditor}
+        annotationAuthor={annotationAuthor}
+        annotationsByAnchor={annotationsByAnchor}
+        annotationActions={annotationActions}
+        annotationSide="old"
+        filePath={filePath}
         key={lineKey(row)}
         side="both"
         tokenSide="old"
@@ -1942,12 +3235,22 @@ function renderStackedRow(row: SplitDiffRow) {
         content={row.text}
         prefix="- "
         tone="delete"
+        onAddAnnotation={onAddAnnotation}
+        onCancelAnnotation={onCancelAnnotation}
+        onSaveAnnotation={onSaveAnnotation}
+        selectedAnnotationId={selectedAnnotationId}
       />,
     ];
   }
   if (row.kind === "add") {
     return [
       <CodeCell
+        annotationEditor={annotationEditor}
+        annotationAuthor={annotationAuthor}
+        annotationsByAnchor={annotationsByAnchor}
+        annotationActions={annotationActions}
+        annotationSide="new"
+        filePath={filePath}
         key={lineKey(row)}
         side="both"
         tokenSide="new"
@@ -1955,11 +3258,21 @@ function renderStackedRow(row: SplitDiffRow) {
         content={row.text}
         prefix="+ "
         tone="add"
+        onAddAnnotation={onAddAnnotation}
+        onCancelAnnotation={onCancelAnnotation}
+        onSaveAnnotation={onSaveAnnotation}
+        selectedAnnotationId={selectedAnnotationId}
       />,
     ];
   }
   return [
     <CodeCell
+      annotationEditor={annotationEditor}
+      annotationAuthor={annotationAuthor}
+      annotationsByAnchor={annotationsByAnchor}
+      annotationActions={annotationActions}
+      annotationSide="old"
+      filePath={filePath}
       key={`${lineKey(row)}-old`}
       side="both"
       tokenSide="old"
@@ -1968,8 +3281,18 @@ function renderStackedRow(row: SplitDiffRow) {
       prefix="- "
       tone="delete"
       wordFragments={getInlineFragments(row.oldText, row.newText, "old")}
+      onAddAnnotation={onAddAnnotation}
+      onCancelAnnotation={onCancelAnnotation}
+      onSaveAnnotation={onSaveAnnotation}
+      selectedAnnotationId={selectedAnnotationId}
     />,
     <CodeCell
+      annotationEditor={annotationEditor}
+      annotationAuthor={annotationAuthor}
+      annotationsByAnchor={annotationsByAnchor}
+      annotationActions={annotationActions}
+      annotationSide="new"
+      filePath={filePath}
       key={`${lineKey(row)}-new`}
       side="both"
       tokenSide="new"
@@ -1978,6 +3301,10 @@ function renderStackedRow(row: SplitDiffRow) {
       prefix="+ "
       tone="add"
       wordFragments={getInlineFragments(row.oldText, row.newText, "new")}
+      onAddAnnotation={onAddAnnotation}
+      onCancelAnnotation={onCancelAnnotation}
+      onSaveAnnotation={onSaveAnnotation}
+      selectedAnnotationId={selectedAnnotationId}
     />,
   ];
 }
@@ -1989,43 +3316,238 @@ type RenderSegment = {
 };
 
 function CodeCell({
+  annotationAuthor,
+  annotationEditor,
+  annotationsByAnchor,
+  annotationActions,
+  annotationSide,
   content,
+  filePath,
   line,
+  onAddAnnotation,
+  onCancelAnnotation,
+  onSaveAnnotation,
   prefix,
+  selectedAnnotationId,
   side,
   tokenSide,
   tone,
   wordFragments,
 }: {
+  annotationAuthor: AnnotationAuthor;
+  annotationEditor: AnnotationEditorState | null;
+  annotationsByAnchor: ReadonlyMap<string, readonly Annotation[]>;
+  annotationActions: AnnotationActions;
+  annotationSide?: AnnotationSide;
   content: string;
+  filePath: string;
   line: number | null;
+  onAddAnnotation(anchor: AnnotationAnchor, mode: AnnotationSelectionMode): void;
+  onCancelAnnotation(): void;
+  onSaveAnnotation(kind: AnnotationKind, body: string): void;
   prefix?: string;
+  selectedAnnotationId: string | null;
   side: "old" | "new" | "both";
   tokenSide?: "old" | "new";
   tone: "add" | "context" | "delete" | "empty";
   wordFragments?: readonly RenderSegment[];
 }) {
   const highlight = useContext(HighlightContext);
+  const annotationDrag = useContext(AnnotationDragContext);
   const tokens = tokenSide != null && line != null ? highlight.getTokens(tokenSide, line) : null;
   const base: readonly RenderSegment[] = wordFragments ?? [{ text: content, highlighted: false }];
   const segments = tokens != null ? mergeSyntax(content, tokens, base) : base;
   const rendered = prefix != null ? [{ text: prefix, highlighted: false }, ...segments] : segments;
+  const anchor =
+    annotationSide == null || line == null
+      ? null
+      : { file: filePath, lineStart: line, lineEnd: line, side: annotationSide };
+  const annotations =
+    anchor == null
+      ? []
+      : (annotationsByAnchor.get(
+          getAnnotationAnchorKey(anchor.file, anchor.lineStart, anchor.side),
+        ) ?? []);
+  const visibleAnnotations =
+    annotationEditor?.type === "edit"
+      ? annotations.filter((annotation) => annotation.id !== annotationEditor.annotation.id)
+      : annotations;
+  const threadAnnotations =
+    line == null ? [] : visibleAnnotations.filter((annotation) => annotation.lineEnd === line);
+  const editorVisible =
+    anchor != null &&
+    line != null &&
+    annotationEditor != null &&
+    annotationEditorMatchesAnchor(annotationEditor, anchor) &&
+    getAnnotationEditorAnchor(annotationEditor).lineEnd === line;
+  const selected =
+    editorVisible ||
+    (anchor != null &&
+      line != null &&
+      (annotationEditorMatchesAnchorNullable(annotationEditor, anchor) ||
+        visibleAnnotations.some(
+          (annotation) =>
+            annotation.id === selectedAnnotationId &&
+            isLineInAnnotationRange(annotation, anchor.file, line, anchor.side),
+        )));
+
+  function startLineAnnotation(event: AnnotationClickEvent) {
+    if (anchor != null) {
+      onAddAnnotation(anchor, event.shiftKey ? "extend" : "replace");
+    }
+  }
+
+  function startLineAnnotationDrag(event: PointerEvent<HTMLSpanElement>) {
+    if (anchor == null || event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    const pointerId = event.pointerId;
+    if (annotationDrag == null) {
+      onAddAnnotation(anchor, event.shiftKey ? "extend" : "replace");
+      return;
+    }
+
+    const dragController = annotationDrag;
+    dragController.start(anchor, pointerId, event.shiftKey ? "extend" : "replace");
+
+    function cleanup() {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
+    }
+
+    function onPointerMove(pointerEvent: globalThis.PointerEvent) {
+      if (pointerEvent.pointerId !== pointerId) {
+        return;
+      }
+      dragController.move(pointerEvent.clientX, pointerEvent.clientY, pointerId);
+    }
+
+    function onPointerUp(pointerEvent: globalThis.PointerEvent) {
+      if (pointerEvent.pointerId !== pointerId) {
+        return;
+      }
+      dragController.end(pointerId);
+      cleanup();
+    }
+
+    function onPointerCancel(pointerEvent: globalThis.PointerEvent) {
+      if (pointerEvent.pointerId !== pointerId) {
+        return;
+      }
+      dragController.end(pointerId);
+      cleanup();
+    }
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
+  }
+
+  function extendLineAnnotationDrag() {
+    if (anchor != null) {
+      annotationDrag?.enter(anchor);
+    }
+  }
+
   return (
-    <div className={`code-cell ${side} ${tone}`}>
-      <span className="line-number">{line ?? ""}</span>
-      <code>
-        {rendered.map((segment, index) => (
-          <span
-            className={segment.highlighted ? "text-highlight" : undefined}
-            key={`${index}-${segment.text}`}
-            style={segment.color != null ? { color: segment.color } : undefined}
+    <div className={getCodeCellClassName(side, tone, selected)}>
+      <span
+        className={annotations.length > 0 ? "line-number annotated" : "line-number"}
+        data-annotation-file={anchor?.file}
+        data-annotation-line={anchor?.lineStart}
+        data-annotation-side={anchor?.side}
+        onPointerDown={startLineAnnotationDrag}
+        onPointerEnter={extendLineAnnotationDrag}
+      >
+        <span className="line-number-text">{line ?? ""}</span>
+        {anchor != null ? (
+          <button
+            aria-label={`Annotate line ${anchor.lineStart}`}
+            className="line-annotate-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onAddAnnotation(anchor, event.shiftKey ? "extend" : "replace");
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+            title="Annotate line"
           >
-            {segment.text}
+            <Plus size={10} />
+          </button>
+        ) : null}
+        {annotations.length > 0 ? (
+          <span className="line-annotation-count">
+            {threadAnnotations.length || annotations.length}
           </span>
+        ) : null}
+      </span>
+      <div className="code-content">
+        <code onClick={startLineAnnotation}>
+          {rendered.map((segment, index) => (
+            <span
+              className={segment.highlighted ? "text-highlight" : undefined}
+              key={`${index}-${segment.text}`}
+              style={segment.color != null ? { color: segment.color } : undefined}
+            >
+              {segment.text}
+            </span>
+          ))}
+        </code>
+        {threadAnnotations.map((annotation) => (
+          <InlineAnnotationCard
+            annotation={annotation}
+            key={annotation.id}
+            selected={annotation.id === selectedAnnotationId}
+            onDelete={annotationActions.onDelete}
+            onEdit={annotationActions.onEdit}
+            onSelect={annotationActions.onSelect}
+            onToggleResolved={annotationActions.onToggleResolved}
+          />
         ))}
-      </code>
+        {editorVisible ? (
+          <InlineAnnotationEditor
+            author={annotationAuthor}
+            state={annotationEditor}
+            onCancel={onCancelAnnotation}
+            onSave={onSaveAnnotation}
+          />
+        ) : null}
+      </div>
     </div>
   );
+}
+
+function annotationEditorMatchesAnchor(
+  editor: AnnotationEditorState,
+  anchor: AnnotationAnchor,
+): boolean {
+  const editorAnchor = getAnnotationEditorAnchor(editor);
+  return (
+    editorAnchor.file === anchor.file &&
+    editorAnchor.side === anchor.side &&
+    anchor.lineStart >= editorAnchor.lineStart &&
+    anchor.lineStart <= editorAnchor.lineEnd
+  );
+}
+
+function annotationEditorMatchesAnchorNullable(
+  editor: AnnotationEditorState | null,
+  anchor: AnnotationAnchor,
+): boolean {
+  return editor == null ? false : annotationEditorMatchesAnchor(editor, anchor);
+}
+
+function getAnnotationEditorAnchor(editor: AnnotationEditorState): AnnotationAnchor {
+  return editor.type === "edit" ? editor.annotation : editor.anchor;
+}
+
+function getCodeCellClassName(
+  side: "old" | "new" | "both",
+  tone: "add" | "context" | "delete" | "empty",
+  selected: boolean,
+): string {
+  return selected ? `code-cell ${side} ${tone} selected` : `code-cell ${side} ${tone}`;
 }
 
 function getImagePreviewSides(preview: ImagePreview): readonly RenderImagePreviewSide[] {
@@ -2066,4 +3588,15 @@ function getErrorMessage(error: unknown): string {
 
 function toggleMenu(current: HeaderMenu | null, next: HeaderMenu): HeaderMenu | null {
   return current === next ? null : next;
+}
+
+function headerHotkeyToMenu(action: "openRecent" | "openWorktree" | "openBranch"): HeaderMenu {
+  switch (action) {
+    case "openRecent":
+      return "project";
+    case "openWorktree":
+      return "worktree";
+    case "openBranch":
+      return "branch";
+  }
 }
