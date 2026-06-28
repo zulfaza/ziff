@@ -1,21 +1,24 @@
-import { ChevronsDownUp, ChevronsUpDown, Columns2, RefreshCw, Rows3 } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_SPLIT_WIDTH,
-  ComparisonControls,
-  DiffPreviewList,
-  ChangesPanel,
-  HistoryList,
+  DiffPanel,
   RepoHeader,
   ResizeHandle,
+  Sidebar,
   Splash,
 } from "./components";
+import { formatAnnotationsForAgentPrompt } from "../annotations";
 import { getTotals } from "./diffModel";
 import { resolveAppHotkey } from "./hotkeys";
 import { forgetProject, readRecentProjects, rememberProject } from "./recentProjects";
-import type { DiffPreview, HeaderMenu, LoadState, RecentProject, SidebarTab } from "./types";
+import type { DiffPreview, LoadState, RecentProject } from "./types";
 import type {
-  CommitEntry,
+  Annotation,
+  AnnotationAnchor,
+  AnnotationAuthor,
+  AnnotationKind,
+  AnnotationStatus,
   DiffComparison,
   RepoSnapshot,
   SidebarSettings,
@@ -28,6 +31,11 @@ const defaultDiffContextLines = 3;
 const diffContextExpansionLines = 5;
 const WORKING_TREE_COMPARISON: DiffComparison = { type: "working-tree" };
 type WorkbenchStyle = CSSProperties & { "--sidebar-width": string };
+type AnnotationEditorState =
+  | { type: "create"; anchor: AnnotationAnchor; kind: AnnotationKind }
+  | { type: "edit"; annotation: Annotation };
+type AnnotationSelectionMode = "extend" | "range" | "replace";
+const defaultAnnotationAuthor: AnnotationAuthor = { name: "You", avatarUrl: null };
 
 export function App() {
   const [loadState, setLoadState] = useState<LoadState>({ type: "loading" });
@@ -40,11 +48,13 @@ export function App() {
   const [readPaths, setReadPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [collapsedPaths, setCollapsedPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [viewMode, setViewMode] = useState<ViewMode>("split");
-  const [openHeaderMenu, setOpenHeaderMenu] = useState<HeaderMenu | null>(null);
   const [sidebarVisible, setSidebarVisible] = useState(true);
-  const [sidebarTab, setSidebarTab] = useState<SidebarTab>("changes");
-  const [commits, setCommits] = useState<readonly CommitEntry[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [annotations, setAnnotations] = useState<readonly Annotation[]>([]);
+  const [annotationAuthor, setAnnotationAuthor] =
+    useState<AnnotationAuthor>(defaultAnnotationAuthor);
+  const [annotationKind, setAnnotationKind] = useState<AnnotationKind>("review");
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [annotationEditor, setAnnotationEditor] = useState<AnnotationEditorState | null>(null);
   const [recentProjects, setRecentProjects] = useState<readonly RecentProject[]>(() =>
     readRecentProjects(),
   );
@@ -100,58 +110,20 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    function closeMenu(event: MouseEvent) {
-      if (event.target instanceof Element && event.target.closest(".header-menu-wrap") != null) {
-        return;
-      }
-      setOpenHeaderMenu(null);
-    }
-
-    window.addEventListener("mousedown", closeMenu);
-    return () => window.removeEventListener("mousedown", closeMenu);
-  }, []);
-
-  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape" && openHeaderMenu != null) {
-        event.preventDefault();
-        setOpenHeaderMenu(null);
-        return;
-      }
-
       const action = resolveAppHotkey(event);
-      if (action == null) {
+      if (action !== "toggleSidebar") {
         return;
       }
 
       event.preventDefault();
       event.stopPropagation();
-
-      switch (action) {
-        case "openRecent":
-          if (loadState.type === "ready") {
-            setOpenHeaderMenu("project");
-          }
-          return;
-        case "openWorktree":
-          if (loadState.type === "ready") {
-            setOpenHeaderMenu("worktree");
-          }
-          return;
-        case "openBranch":
-          if (loadState.type === "ready") {
-            setOpenHeaderMenu("branch");
-          }
-          return;
-        case "toggleSidebar":
-          setSidebarVisible((visible) => !visible);
-          return;
-      }
+      setSidebarVisible((visible) => !visible);
     }
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [loadState.type, openHeaderMenu]);
+  }, []);
 
   useEffect(() => {
     if (snapshot == null) {
@@ -190,29 +162,28 @@ export function App() {
   }, [snapshot, comparison]);
 
   useEffect(() => {
-    if (snapshot == null || sidebarTab !== "history") {
+    if (snapshot == null) {
+      setAnnotations([]);
+      setAnnotationAuthor(defaultAnnotationAuthor);
+      setSelectedAnnotationId(null);
       return;
     }
 
     let active = true;
-    setHistoryLoading(true);
-    void window.ziff
-      .getHistory()
-      .then((nextCommits) => {
-        if (active) {
-          setCommits(nextCommits);
-        }
-      })
-      .finally(() => {
-        if (active) {
-          setHistoryLoading(false);
-        }
-      });
-
+    void window.ziff.getAnnotations(comparison).then((nextAnnotations) => {
+      if (active) {
+        setAnnotations(nextAnnotations);
+      }
+    });
+    void window.ziff.getAnnotationAuthor().then((nextAuthor) => {
+      if (active) {
+        setAnnotationAuthor(nextAuthor);
+      }
+    });
     return () => {
       active = false;
     };
-  }, [snapshot, sidebarTab]);
+  }, [snapshot, comparison]);
 
   useEffect(() => {
     const panel = diffPanelRef.current;
@@ -317,6 +288,96 @@ export function App() {
     });
   }
 
+  function selectAnnotation(annotation: Annotation) {
+    setSelectedAnnotationId(annotation.id);
+    selectPath(annotation.file);
+  }
+
+  function startAnnotation(anchor: AnnotationAnchor, mode: AnnotationSelectionMode) {
+    setAnnotationEditor((current) => {
+      if (mode === "replace") {
+        return { type: "create", anchor, kind: annotationKind };
+      }
+      if (
+        mode === "range" &&
+        current?.type === "create" &&
+        current.anchor.file === anchor.file &&
+        current.anchor.side === anchor.side
+      ) {
+        if (
+          current.anchor.lineStart === anchor.lineStart &&
+          current.anchor.lineEnd === anchor.lineEnd
+        ) {
+          return current;
+        }
+        return { ...current, anchor };
+      }
+      if (
+        mode === "extend" &&
+        current?.type === "create" &&
+        current.anchor.file === anchor.file &&
+        current.anchor.side === anchor.side
+      ) {
+        return { ...current, anchor: mergeAnnotationAnchors(current.anchor, anchor) };
+      }
+      if (current != null) {
+        return current;
+      }
+      return { type: "create", anchor, kind: annotationKind };
+    });
+  }
+
+  async function saveAnnotation(kind: AnnotationKind, body: string) {
+    if (annotationEditor == null) {
+      return;
+    }
+    if (annotationEditor.type === "create") {
+      const created = await window.ziff.createAnnotation({
+        ...annotationEditor.anchor,
+        comparison,
+        kind,
+        body,
+      });
+      setAnnotations((current) => [...current, created]);
+      setSelectedAnnotationId(created.id);
+      setAnnotationEditor(null);
+      return;
+    }
+
+    const updated = await window.ziff.updateAnnotation({
+      id: annotationEditor.annotation.id,
+      kind,
+      body,
+    });
+    setAnnotations((current) =>
+      current.map((annotation) => (annotation.id === updated.id ? updated : annotation)),
+    );
+    setAnnotationEditor(null);
+  }
+
+  async function deleteAnnotation(id: string) {
+    await window.ziff.deleteAnnotation(id);
+    setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
+    setSelectedAnnotationId((current) => (current === id ? null : current));
+  }
+
+  async function toggleAnnotationResolved(annotation: Annotation) {
+    const status: AnnotationStatus =
+      annotation.status.state === "open"
+        ? { state: "resolved", resolvedAt: new Date().toISOString() }
+        : { state: "open" };
+    const updated = await window.ziff.updateAnnotation({ id: annotation.id, status });
+    setAnnotations((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+  }
+
+  async function copyAnnotationsPrompt(selectedAnnotations: readonly Annotation[]) {
+    if (snapshot == null) {
+      return;
+    }
+    const text = formatAnnotationsForAgentPrompt(selectedAnnotations, comparison, snapshot.info);
+    await navigator.clipboard.writeText(text);
+  }
+
   function updateSidebarSettings(patch: Partial<SidebarSettings>) {
     void window.ziff.updateSettings(patch).then(setSidebarSettings);
   }
@@ -365,7 +426,6 @@ export function App() {
   }
 
   async function switchWorktree(path: string) {
-    setOpenHeaderMenu(null);
     const next = await window.ziff.switchWorktree(path);
     setComparison(WORKING_TREE_COMPARISON);
     setLoadState({ type: "ready", snapshot: next });
@@ -374,12 +434,10 @@ export function App() {
   }
 
   async function openProjectWindow(path: string) {
-    setOpenHeaderMenu(null);
     await window.ziff.openProjectWindow(path);
   }
 
   async function switchBranch(branch: string) {
-    setOpenHeaderMenu(null);
     setComparison(WORKING_TREE_COMPARISON);
     await replaceSnapshot(() => window.ziff.switchBranch(branch));
   }
@@ -437,12 +495,10 @@ export function App() {
       <header className="topbar">
         <div className="traffic" />
         <RepoHeader
-          menu={openHeaderMenu}
           recentProjects={recentProjects}
           snapshot={loadState.snapshot}
           onChooseRepo={() => void chooseRepo()}
           onForgetProject={(path) => forgetProject(path, setRecentProjects)}
-          onMenuChange={setOpenHeaderMenu}
           onOpenProjectWindow={(path) => void openProjectWindow(path)}
           onSwitchBranch={(branch) => void switchBranch(branch)}
           onSwitchProject={(path) => void switchWorktree(path)}
@@ -457,50 +513,33 @@ export function App() {
         className={sidebarVisible ? "workbench" : "workbench sidebar-hidden"}
         style={getWorkbenchStyle(sidebarWidth)}
       >
-        <aside
-          aria-hidden={!sidebarVisible}
-          className={sidebarTab === "history" ? "sidebar history-active" : "sidebar"}
-          inert={!sidebarVisible}
-        >
-          <section className="sidebar-tabs">
-            <button
-              className={sidebarTab === "changes" ? "tab active" : "tab"}
-              onClick={() => setSidebarTab("changes")}
-            >
-              Changes ({loadState.snapshot.files.length})
-            </button>
-            <button
-              className={sidebarTab === "history" ? "tab active" : "tab"}
-              onClick={() => setSidebarTab("history")}
-            >
-              History
-            </button>
-          </section>
-          {sidebarTab === "changes" ? (
-            <ChangesPanel
-              files={loadState.snapshot.files}
-              fileGroupBy={sidebarSettings.fileGroupBy}
-              fileListView={sidebarSettings.fileListView}
-              readPaths={readPaths}
-              selectedPath={selectedPath}
-              totalsAdded={totals.added}
-              totalsDeleted={totals.deleted}
-              onFileGroupByChange={(fileGroupBy) => updateSidebarSettings({ fileGroupBy })}
-              onFileListViewChange={(fileListView) => updateSidebarSettings({ fileListView })}
-              onSelect={selectPath}
-              onToggleRead={toggleRead}
-              onToggleReadMany={setManyRead}
-              onViewDiff={chooseRepo}
-            />
-          ) : (
-            <HistoryList
-              activeHash={comparison.type === "commit" ? comparison.hash : null}
-              commits={commits}
-              loading={historyLoading}
-              onSelectCommit={(hash) => void changeComparison({ type: "commit", hash })}
-            />
-          )}
-        </aside>
+        <Sidebar
+          annotationKind={annotationKind}
+          annotations={annotations}
+          comparison={comparison}
+          fileGroupBy={sidebarSettings.fileGroupBy}
+          fileListView={sidebarSettings.fileListView}
+          readPaths={readPaths}
+          selectedAnnotationId={selectedAnnotationId}
+          selectedPath={selectedPath}
+          snapshot={loadState.snapshot}
+          totalsAdded={totals.added}
+          totalsDeleted={totals.deleted}
+          visible={sidebarVisible}
+          onAnnotationKindChange={setAnnotationKind}
+          onChangeComparison={(nextComparison) => void changeComparison(nextComparison)}
+          onCopyPrompt={(selectedAnnotations) => void copyAnnotationsPrompt(selectedAnnotations)}
+          onDeleteAnnotation={(id) => void deleteAnnotation(id)}
+          onEditAnnotation={(annotation) => setAnnotationEditor({ type: "edit", annotation })}
+          onFileGroupByChange={(fileGroupBy) => updateSidebarSettings({ fileGroupBy })}
+          onFileListViewChange={(fileListView) => updateSidebarSettings({ fileListView })}
+          onSelectAnnotation={selectAnnotation}
+          onSelectPath={selectPath}
+          onToggleAnnotationResolved={(annotation) => void toggleAnnotationResolved(annotation)}
+          onToggleRead={toggleRead}
+          onToggleReadMany={setManyRead}
+          onViewDiff={chooseRepo}
+        />
         <ResizeHandle
           defaultValue={defaultSidebarWidth}
           label="Resize changes panel"
@@ -510,56 +549,40 @@ export function App() {
           value={sidebarWidth}
         />
 
-        <section className="diff-panel" ref={diffPanelRef}>
-          <div className="diff-toolbar">
-            <button
-              className="icon-button"
-              disabled={previewPaths.length === 0}
-              title={allCollapsed ? "Expand previews" : "Collapse previews"}
-              onClick={toggleAllPreviews}
-            >
-              {allCollapsed ? <ChevronsUpDown size={16} /> : <ChevronsDownUp size={16} />}
-            </button>
-            <div className="segmented" aria-label="Diff layout">
-              <button
-                className={effectiveViewMode === "stacked" ? "active" : ""}
-                onClick={() => setViewMode("stacked")}
-                title="Stacked diff"
-              >
-                <Rows3 size={16} />
-              </button>
-              <button
-                className={effectiveViewMode === "split" ? "active" : ""}
-                disabled={isDiffPanelNarrow}
-                onClick={() => setViewMode("split")}
-                title={isDiffPanelNarrow ? "Split diff needs more width" : "Split diff"}
-              >
-                <Columns2 size={16} />
-              </button>
-            </div>
-            <div className="toolbar-spacer" />
-            <ComparisonControls
-              comparison={comparison}
-              info={loadState.snapshot.info}
-              onChange={(nextComparison) => void changeComparison(nextComparison)}
-            />
-          </div>
-          <DiffPreviewList
-            previews={diffPreviews}
-            collapsedPaths={collapsedPaths}
-            comparison={comparison}
-            readPaths={readPaths}
-            selectedPath={selectedPath}
-            leftWidth={leftWidth}
-            mode={effectiveViewMode}
-            onOpenFile={(path) => void window.ziff.openFile(path)}
-            onExpandContext={expandDiffContext}
-            onResize={setLeftWidth}
-            onSelect={selectPath}
-            onTogglePreview={togglePreview}
-            onToggleRead={toggleRead}
-          />
-        </section>
+        <DiffPanel
+          allCollapsed={allCollapsed}
+          annotationAuthor={annotationAuthor}
+          annotationEditor={annotationEditor}
+          annotations={annotations}
+          collapsedPaths={collapsedPaths}
+          comparison={comparison}
+          diffPanelRef={diffPanelRef}
+          effectiveViewMode={effectiveViewMode}
+          info={loadState.snapshot.info}
+          isDiffPanelNarrow={isDiffPanelNarrow}
+          leftWidth={leftWidth}
+          previewPaths={previewPaths}
+          previews={diffPreviews}
+          readPaths={readPaths}
+          selectedAnnotationId={selectedAnnotationId}
+          selectedPath={selectedPath}
+          onAddAnnotation={startAnnotation}
+          onCancelAnnotation={() => setAnnotationEditor(null)}
+          onChangeComparison={(nextComparison) => void changeComparison(nextComparison)}
+          onDeleteAnnotation={(id) => void deleteAnnotation(id)}
+          onEditAnnotation={(annotation) => setAnnotationEditor({ type: "edit", annotation })}
+          onExpandContext={expandDiffContext}
+          onOpenFile={(path) => void window.ziff.openFile(path)}
+          onResize={setLeftWidth}
+          onSaveAnnotation={(kind, body) => void saveAnnotation(kind, body)}
+          onSelect={selectPath}
+          onSelectAnnotation={selectAnnotation}
+          onToggleAllPreviews={toggleAllPreviews}
+          onToggleAnnotationResolved={(annotation) => void toggleAnnotationResolved(annotation)}
+          onTogglePreview={togglePreview}
+          onToggleRead={toggleRead}
+          onViewModeChange={setViewMode}
+        />
       </div>
     </main>
   );
@@ -567,6 +590,18 @@ export function App() {
 
 function getWorkbenchStyle(sidebarWidth: number): WorkbenchStyle {
   return { "--sidebar-width": `${sidebarWidth}px` };
+}
+
+function mergeAnnotationAnchors(
+  first: AnnotationAnchor,
+  second: AnnotationAnchor,
+): AnnotationAnchor {
+  return {
+    file: first.file,
+    lineStart: Math.min(first.lineStart, second.lineStart),
+    lineEnd: Math.max(first.lineEnd, second.lineEnd),
+    side: first.side,
+  };
 }
 
 function shouldRestoreInitialProject(): boolean {

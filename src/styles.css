@@ -161,8 +161,8 @@ textarea {
   color: var(--text-muted);
   cursor: pointer;
   display: inline-flex;
-  font-size: 13px;
-  font-weight: 560;
+  font-size: 12px;
+  font-weight: 400;
   gap: 6px;
   height: 24px;
   max-width: 220px;
@@ -171,7 +171,7 @@ textarea {
 
 .header-selector.project {
   color: var(--text);
-  font-weight: 650;
+  font-weight: 500;
   max-width: 260px;
 }
 
@@ -202,7 +202,7 @@ textarea {
 
 .header-slash {
   color: var(--text-disabled);
-  font-size: 13px;
+  font-size: 12px;
   opacity: 0.45;
   padding: 0 2px;
 }
@@ -232,13 +232,6 @@ textarea {
   width: min(520px, calc(100vw - 24px));
 }
 
-.menu-search-row {
-  align-items: center;
-  border-bottom: 1px solid var(--border-variant);
-  display: grid;
-  grid-template-columns: 1fr 34px;
-}
-
 .menu-search {
   align-items: center;
   border-bottom: 1px solid var(--border-variant);
@@ -247,10 +240,6 @@ textarea {
   gap: 7px;
   height: 36px;
   padding: 0 10px;
-}
-
-.menu-search-row .menu-search {
-  border-bottom: 0;
 }
 
 .menu-search input {
@@ -269,50 +258,10 @@ textarea {
   opacity: 1;
 }
 
-.menu-icon-button {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  color: var(--icon);
-  cursor: pointer;
-  display: inline-flex;
-  height: 34px;
-  justify-content: center;
-}
-
-.menu-tabs {
-  display: inline-flex;
-  margin: 8px 0 0 8px;
-}
-
-.menu-tabs button {
-  background: var(--editor-background);
-  border: 1px solid var(--border-elevated);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 650;
-  height: 29px;
-  padding: 0 12px;
-}
-
-.menu-tabs button:first-child {
-  border-radius: 7px 0 0 7px;
-}
-
-.menu-tabs button:last-child {
-  border-radius: 0 7px 7px 0;
-}
-
-.menu-tabs button.active {
-  background: var(--selection-background);
-  color: var(--text-accent);
-}
-
 .menu-section-title {
   color: var(--text-muted);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   padding: 9px 10px 2px;
 }
 
@@ -405,21 +354,15 @@ textarea {
 }
 
 .menu-row:hover,
-.menu-row.active,
-.create-row {
+.menu-row.active {
   background: var(--element-selected);
-}
-
-.create-row {
-  margin: 6px;
-  width: calc(100% - 12px);
 }
 
 .menu-primary {
   color: var(--text);
   display: block;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 400;
   line-height: 1.25;
   min-width: 0;
   overflow: hidden;
@@ -431,7 +374,7 @@ textarea {
   color: var(--text-muted);
   display: block;
   font-size: 12px;
-  font-weight: 520;
+  font-weight: 400;
   line-height: 1.25;
   margin-top: 2px;
   min-width: 0;
@@ -461,7 +404,7 @@ textarea {
   color: var(--text);
   cursor: pointer;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 400;
   padding: 0;
   text-align: left;
 }
@@ -493,7 +436,7 @@ textarea {
   width: var(--sidebar-width, 360px);
 }
 
-.sidebar.history-active {
+.sidebar.single-panel-active {
   grid-template-rows: 36px 1fr;
 }
 
@@ -507,7 +450,7 @@ textarea {
 
 .sidebar-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .tab {
@@ -521,7 +464,7 @@ textarea {
 .tab.active {
   background: var(--panel-background);
   color: var(--text);
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .sidebar-actions,
@@ -594,7 +537,7 @@ textarea {
 .toolbar-button,
 .small-button {
   font-size: 13px;
-  font-weight: 560;
+  font-weight: 400;
 }
 
 .small-button {
@@ -658,7 +601,15 @@ textarea {
 }
 
 .file-list-settings-menu .menu-section-title {
-  padding: 6px 12px 4px;
+  color: var(--text-disabled);
+  cursor: default;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 8px 12px 2px;
+  pointer-events: none;
+  text-transform: uppercase;
+  user-select: none;
 }
 
 .settings-menu-row {
@@ -723,7 +674,7 @@ textarea {
 .commit-subject {
   color: var(--text);
   font-size: 15px;
-  font-weight: 560;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -759,6 +710,128 @@ textarea {
 
 .commit-dot {
   color: var(--text-placeholder);
+}
+
+.annotations-panel {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+}
+
+.annotation-filters {
+  align-items: center;
+  border-bottom: 1px solid var(--border-variant);
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 0.8fr) auto auto;
+  padding: 8px;
+}
+
+.annotation-filters select {
+  background: var(--element-background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  min-width: 0;
+  padding: 4px 6px;
+}
+
+.annotation-current-file {
+  align-items: center;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 5px;
+}
+
+.annotation-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.annotation-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 8px;
+}
+
+.annotation-list-item {
+  border: 1px solid transparent;
+  border-radius: 7px;
+  display: grid;
+  gap: 4px;
+  margin-bottom: 6px;
+  padding: 7px;
+}
+
+.annotation-list-item:hover,
+.annotation-list-item.selected {
+  background: var(--element-hover);
+  border-color: var(--border);
+}
+
+.annotation-list-main {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.annotation-list-title,
+.annotation-list-meta {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+}
+
+.annotation-list-title span:last-child {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-list-title svg,
+.annotation-comment-meta svg {
+  color: var(--text-accent);
+  flex: 0 0 auto;
+}
+
+.annotation-list-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.annotation-list-body {
+  color: var(--text-muted);
+  display: -webkit-box;
+  font-size: 12px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.annotation-actions {
+  display: flex;
+  gap: 3px;
+  justify-content: flex-end;
+}
+
+.annotation-actions .icon-button {
+  color: var(--text-muted);
+  height: 22px;
+  width: 22px;
 }
 
 .group-title {
@@ -976,7 +1049,7 @@ textarea {
 
 .compare-range {
   color: var(--text-disabled);
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .branch-compare-picker {
@@ -1012,12 +1085,12 @@ textarea {
 .branch-compare-label {
   color: var(--text-muted);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 400;
 }
 
 .branch-compare-value {
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 500;
   max-width: 160px;
   min-width: 48px;
   overflow: hidden;
@@ -1067,7 +1140,7 @@ textarea {
 .branch-compare-section-title {
   color: var(--text-muted);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   padding: 9px 10px 2px;
 }
 
@@ -1100,7 +1173,7 @@ textarea {
 
 .branch-compare-row-name {
   font-size: 13px;
-  font-weight: 560;
+  font-weight: 400;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1111,7 +1184,7 @@ textarea {
   color: var(--text-disabled);
   flex: 0 0 auto;
   font-size: 10px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .branch-compare-empty {
@@ -1127,7 +1200,7 @@ textarea {
   color: var(--text-accent);
   font-family: "Berkeley Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 500;
   line-height: 26px;
   padding: 0 8px;
 }
@@ -1173,9 +1246,11 @@ textarea {
 }
 
 .diff-body {
+  --diff-row-height: calc(1lh + 4px);
+  --empty-stripe-width: 2px;
   font-family: "Berkeley Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 12.5px;
-  font-weight: 520;
+  font-weight: 400;
   line-height: 1.5;
   overflow: auto;
   scrollbar-gutter: stable;
@@ -1205,7 +1280,7 @@ textarea {
 
 .file-preview-header strong {
   color: var(--text);
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .preview-toggle {
@@ -1261,7 +1336,7 @@ textarea {
   box-shadow: 0 8px 20px var(--shadow-elevated);
   color: var(--text);
   font-size: 12px;
-  font-weight: 560;
+  font-weight: 400;
   opacity: 0;
   padding: 4px 8px;
   pointer-events: none;
@@ -1273,6 +1348,10 @@ textarea {
 
 .toolbar-button-popover.visible {
   opacity: 1;
+}
+
+.annotation-kind-switch {
+  justify-self: start;
 }
 
 .preview-message {
@@ -1514,8 +1593,17 @@ textarea {
   grid-template-columns: 68px minmax(0, 1fr);
 }
 
-.code-cell code {
+.code-content {
+  display: grid;
+  min-width: 0;
+}
+
+.code-content code {
+  box-sizing: border-box;
   color: var(--text);
+  cursor: pointer;
+  line-height: calc(var(--diff-row-height) - 4px);
+  min-height: var(--diff-row-height);
   min-width: 0;
   overflow: hidden;
   padding: 2px 12px;
@@ -1524,11 +1612,80 @@ textarea {
 }
 
 .line-number {
+  align-items: center;
   background: var(--editor-gutter-background);
+  box-sizing: border-box;
   color: var(--text-disabled);
-  padding: 2px 8px;
+  cursor: pointer;
+  display: flex;
+  justify-content: flex-end;
+  min-height: var(--diff-row-height);
+  padding: 0 12px 0 8px;
+  position: relative;
   text-align: right;
   user-select: none;
+}
+
+.line-number-text {
+  min-width: 0;
+}
+
+.line-number.annotated {
+  color: var(--text-accent);
+}
+
+.line-annotate-button {
+  align-items: center;
+  background: var(--text-accent);
+  border: 0;
+  border-radius: 5px;
+  box-shadow: 0 3px 10px var(--shadow-elevated);
+  color: #081018;
+  cursor: pointer;
+  display: inline-flex;
+  left: calc(100% - 12px);
+  height: 16px;
+  justify-content: center;
+  opacity: 0;
+  padding: 0;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%) scale(0.92);
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
+  width: 16px;
+  z-index: 4;
+}
+
+.code-cell:hover .line-annotate-button,
+.line-annotate-button:focus-visible {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+.line-annotate-button:hover {
+  filter: brightness(1.08);
+}
+
+.line-annotation-count {
+  background: var(--selection-background);
+  border-radius: 999px;
+  color: var(--text-accent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  min-width: 14px;
+  position: absolute;
+  right: -10px;
+  text-align: center;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 3;
+}
+
+.code-cell:hover .line-annotation-count {
+  opacity: 0;
 }
 
 .code-cell.add {
@@ -1571,14 +1728,167 @@ textarea {
   color: var(--version-control-deleted-text);
 }
 
-.code-cell.empty {
+.code-cell.empty .code-content {
   background: repeating-linear-gradient(
     -45deg,
     var(--editor-background) 0,
-    var(--editor-background) 8px,
-    var(--editor-subheader-background) 8px,
-    var(--editor-subheader-background) 10px
+    var(--editor-background) calc(var(--diff-row-height) - var(--empty-stripe-width)),
+    var(--editor-subheader-background) calc(var(--diff-row-height) - var(--empty-stripe-width)),
+    var(--editor-subheader-background) var(--diff-row-height)
   );
+  background-position: calc(var(--empty-pattern-offset, 0) * var(--diff-row-height) * -1)
+    calc(var(--empty-pattern-offset, 0) * var(--diff-row-height) * -1);
+  background-size: var(--diff-row-height) var(--diff-row-height);
+}
+
+.code-cell.selected,
+.diff-body.annotation-dragging .code-cell.selected,
+.diff-body.annotation-dragging .code-cell.annotation-drag-preview {
+  background: var(--selection-background);
+}
+
+.code-cell.selected .line-number,
+.diff-body.annotation-dragging .code-cell.selected .line-number,
+.diff-body.annotation-dragging .code-cell.annotation-drag-preview .line-number {
+  background: color-mix(in lab, var(--editor-gutter-background) 60%, var(--text-accent));
+  color: var(--text-accent);
+}
+
+.diff-body.annotation-dragging .line-number {
+  cursor: ns-resize;
+}
+
+.diff-body.annotation-dragging .resize-slider {
+  pointer-events: none;
+}
+
+.annotation-thread,
+.annotation-composer-wrap {
+  border: 1px solid var(--text);
+  border-radius: 4px;
+  margin: 8px;
+  max-width: 600px;
+  overflow: hidden;
+  padding: 8px;
+  white-space: normal;
+}
+
+.annotation-thread.selected {
+  border-color: var(--border-focused);
+}
+
+.annotation-composer,
+.annotation-comment {
+  display: flex;
+  gap: 10px;
+}
+
+.annotation-avatar {
+  align-items: center;
+  background: linear-gradient(135deg, #dce8ff, #7587a7);
+  border-radius: 50%;
+  color: #101216;
+  display: inline-flex;
+  flex: 0 0 24px;
+  font-size: 12px;
+  font-weight: 600;
+  height: 24px;
+  justify-content: center;
+  margin-top: 2px;
+  width: 24px;
+}
+
+img.annotation-avatar {
+  object-fit: cover;
+}
+
+.annotation-composer-main,
+.annotation-comment-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.annotation-composer textarea {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  field-sizing: content;
+  min-height: 2.5em;
+  outline: none;
+  padding: 0;
+  resize: none;
+  width: 100%;
+}
+
+.annotation-composer textarea::placeholder {
+  color: var(--text-placeholder);
+}
+
+.annotation-composer-footer {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.annotation-submit-button {
+  background: var(--text);
+  border: 0;
+  border-radius: 4px;
+  color: #111;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 6px 12px;
+}
+
+.annotation-submit-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.annotation-cancel-button,
+.annotation-thread-link {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  gap: 5px;
+  padding: 0;
+}
+
+.annotation-cancel-button:hover,
+.annotation-thread-link:hover {
+  color: var(--text-accent);
+}
+
+.annotation-comment-meta {
+  align-items: baseline;
+  color: var(--text-muted);
+  display: flex;
+  font-size: 14px;
+  gap: 8px;
+}
+
+.annotation-comment-meta strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.annotation-comment p {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 0;
+  white-space: pre-wrap;
+}
+
+.annotation-thread-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
 }
 
 /* Wide transparent hit zone with a thin centered line that lights up on

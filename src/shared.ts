@@ -115,6 +115,47 @@ export type FileListView = "list" | "tree";
 
 export type FileGroupBy = "none" | "status";
 
+export type AnnotationKind = "agent-prompt" | "review";
+
+export type AnnotationSide = "old" | "new";
+
+export type AnnotationStatus = { state: "open" } | { state: "resolved"; resolvedAt: string };
+
+export interface AnnotationAuthor {
+  avatarUrl: string | null;
+  name: string;
+}
+
+export interface AnnotationAnchor {
+  file: string;
+  lineEnd: number;
+  lineStart: number;
+  side: AnnotationSide;
+}
+
+export interface Annotation extends AnnotationAnchor {
+  id: string;
+  kind: AnnotationKind;
+  body: string;
+  comparison: DiffComparison;
+  createdAt: string;
+  status: AnnotationStatus;
+  author?: AnnotationAuthor;
+}
+
+export interface CreateAnnotationRequest extends AnnotationAnchor {
+  body: string;
+  comparison: DiffComparison;
+  kind: AnnotationKind;
+}
+
+export interface UpdateAnnotationRequest {
+  id: string;
+  body?: string;
+  kind?: AnnotationKind;
+  status?: AnnotationStatus;
+}
+
 export interface SidebarSettings {
   fileGroupBy: FileGroupBy;
   fileListView: FileListView;
@@ -142,8 +183,12 @@ export interface ImagePreviewRequest {
 }
 
 export interface ZiffApi {
+  createAnnotation(request: CreateAnnotationRequest): Promise<Annotation>;
+  deleteAnnotation(id: string): Promise<void>;
+  getAnnotationAuthor(): Promise<AnnotationAuthor>;
   chooseRepo(): Promise<RepoSnapshot | null>;
   commit(request: CommitRequest): Promise<RepoSnapshot>;
+  getAnnotations(comparison: DiffComparison): Promise<readonly Annotation[]>;
   getComparison(comparison: DiffComparison): Promise<RepoSnapshot>;
   getDiff(request: DiffRequest): Promise<FileDiff>;
   getImagePreview(request: ImagePreviewRequest): Promise<ImagePreview>;
@@ -158,5 +203,6 @@ export interface ZiffApi {
   switchBranch(branch: string): Promise<RepoSnapshot>;
   switchWorktree(path: string): Promise<RepoSnapshot>;
   unstage(path: string): Promise<RepoSnapshot>;
+  updateAnnotation(request: UpdateAnnotationRequest): Promise<Annotation>;
   updateSettings(settings: Partial<SidebarSettings>): Promise<SidebarSettings>;
 }
