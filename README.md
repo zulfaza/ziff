@@ -1,5 +1,7 @@
 # Ziff
 
+![public/preview.jpg](public/preview.jpg)
+
 A local Git diff viewer for reviewing changes before you commit, open a PR, or hand work to a coding agent.
 
 Ziff is a desktop app (Electron + React) that focuses on the review loop: browse changed files, read unified diffs with syntax highlighting, compare branches or commits, and stage or commit without leaving the app.

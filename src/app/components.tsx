@@ -1386,6 +1386,11 @@ export function DiffPreviewList({
   selectedPath: string | null;
 }) {
   const previewRefs = useRef(new Map<string, HTMLElement>());
+  const scrollAnchorRef = useRef<{
+    element: HTMLElement;
+    scrollContainer: HTMLElement;
+    top: number;
+  } | null>(null);
 
   function togglePreview(path: string, isCollapsed: boolean) {
     onTogglePreview(path);
@@ -1399,6 +1404,16 @@ export function DiffPreviewList({
     });
   }
 
+  useLayoutEffect(() => {
+    const anchor = scrollAnchorRef.current;
+    if (anchor == null) {
+      return;
+    }
+
+    scrollAnchorRef.current = null;
+    anchor.scrollContainer.scrollTop += anchor.element.getBoundingClientRect().top - anchor.top;
+  }, [previews]);
+
   useEffect(() => {
     if (selectedPath == null) {
       return;
@@ -1406,7 +1421,19 @@ export function DiffPreviewList({
 
     const selectedPreview = previewRefs.current.get(selectedPath);
     selectedPreview?.scrollIntoView({ block: "start", inline: "nearest" });
-  }, [selectedPath, previews]);
+  }, [selectedPath]);
+
+  function expandContext(path: string, anchorElement: HTMLElement) {
+    const scrollContainer = anchorElement.closest(".diff-body");
+    if (scrollContainer instanceof HTMLElement) {
+      scrollAnchorRef.current = {
+        element: anchorElement,
+        scrollContainer,
+        top: anchorElement.getBoundingClientRect().top,
+      };
+    }
+    onExpandContext(path);
+  }
 
   useEffect(() => {
     if (selectedAnnotationId == null) {
@@ -1488,7 +1515,9 @@ export function DiffPreviewList({
                   diffPreview={preview}
                   leftWidth={leftWidth}
                   mode={mode}
-                  onExpandContext={() => onExpandContext(preview.file.path)}
+                  onExpandContext={(anchorElement) =>
+                    expandContext(preview.file.path, anchorElement)
+                  }
                   onResize={onResize}
                 />
               </FileAnnotationProvider>
@@ -1516,7 +1545,7 @@ function DiffView({
   diffPreview: DiffPreview;
   leftWidth: number;
   mode: ViewMode;
-  onExpandContext(): void;
+  onExpandContext(anchorElement: HTMLElement): void;
   onResize(width: number): void;
 }) {
   const [renderMode, setRenderMode] = useState<FileRenderMode>("preview");
@@ -1726,7 +1755,7 @@ function DiffHunkList({
   hunks: readonly DiffHunk[];
   leftWidth: number;
   mode: ViewMode;
-  onExpandContext(): void;
+  onExpandContext(anchorElement: HTMLElement): void;
   onResize(width: number): void;
 }) {
   const nodes: ReactNode[] = [];
@@ -1745,7 +1774,7 @@ function DiffHunkList({
     }
     nodes.push(
       <HunkView
-        key={`hunk-${index}-${hunk.header}`}
+        key={`hunk-${getHunkChangeKey(hunk)}`}
         hunk={hunk}
         leftWidth={leftWidth}
         mode={mode}
@@ -1758,18 +1787,23 @@ function DiffHunkList({
   return nodes;
 }
 
+function getHunkChangeKey(hunk: DiffHunk): string {
+  const changedRow = hunk.rows.find((row) => row.kind !== "context");
+  return changedRow == null ? hunk.header : lineKey(changedRow);
+}
+
 function HunkLineInfoSeparator({
   lineInfo,
   onExpandContext,
 }: {
   lineInfo: HunkLineInfo;
-  onExpandContext(): void;
+  onExpandContext(anchorElement: HTMLElement): void;
 }) {
   return (
     <section className="hunk hunk-line-info-separator">
       <button
         className="hunk-line-info"
-        onClick={onExpandContext}
+        onClick={(event) => onExpandContext(event.currentTarget)}
         title="Show more unchanged lines"
       >
         <span className="hunk-line-info-icon" aria-hidden="true">

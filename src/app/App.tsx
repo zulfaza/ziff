@@ -62,6 +62,8 @@ export function App() {
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const diffPanelRef = useRef<HTMLElement | null>(null);
   const saveAnnotationsTimerRef = useRef<number | undefined>(undefined);
+  const diffContextLinesRef = useRef(diffContextLines);
+  diffContextLinesRef.current = diffContextLines;
   const snapshot = loadState.type === "ready" ? loadState.snapshot : null;
   const totals = useMemo(() => getTotals(snapshot?.files ?? []), [snapshot]);
   const previewPaths = useMemo(
@@ -175,7 +177,7 @@ export function App() {
             diff: await window.ziff.getDiff({
               path: file.path,
               comparison,
-              contextLines: diffContextLines.get(file.path) ?? defaultDiffContextLines,
+              contextLines: diffContextLinesRef.current.get(file.path) ?? defaultDiffContextLines,
             }),
           };
         } catch (error) {
@@ -333,9 +335,6 @@ export function App() {
       next.set(path, contextLines);
       return next;
     });
-    setDiffPreviews((current) =>
-      current.map((item) => (item.file.path === path ? { type: "loading", file: item.file } : item)),
-    );
     void window.ziff
       .getDiff({ path, comparison, contextLines })
       .then((diff) => {
