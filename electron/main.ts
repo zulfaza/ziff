@@ -12,6 +12,8 @@ import {
   parseUnifiedDiff,
 } from "../src/gitDiff";
 import type {
+  Annotation,
+  AnnotationRequest,
   BranchEntry,
   CommitEntry,
   CommitRequest,
@@ -29,6 +31,11 @@ import type {
   SidebarSettings,
   WorktreeEntry,
 } from "../src/shared";
+import {
+  comparisonKey,
+  parseAnnotationStore,
+  type AnnotationStoreFile,
+} from "../src/app/annotations";
 
 const execFileAsync = promisify(execFile);
 const windowStates = new Map<number, ZiffWindowState>();
@@ -240,6 +247,40 @@ ipcMain.handle("settings:update", async (_event, patch: unknown): Promise<Sideba
     fileListView: next.fileListView,
   };
 });
+
+ipcMain.handle(
+  "annotations:get",
+  async (event, request: unknown): Promise<readonly Annotation[]> => {
+    const parsed = parseAnnotationRequest(request);
+    const state = getWindowState(event);
+    if (state.repoPath !== parsed.repoPath) {
+      throw new Error("Annotation repo path does not match the active repo");
+    }
+    const store = await readAnnotationStore(parsed.repoPath);
+    const session = store.sessions[comparisonKey(parsed.comparison)];
+    return session?.annotations ?? [];
+  },
+);
+
+ipcMain.handle(
+  "annotations:save",
+  async (event, request: unknown): Promise<readonly Annotation[]> => {
+    const parsed = parseAnnotationSaveRequest(request);
+    const state = getWindowState(event);
+    if (state.repoPath !== parsed.repoPath) {
+      throw new Error("Annotation repo path does not match the active repo");
+    }
+    const store = await readAnnotationStore(parsed.repoPath);
+    const key = comparisonKey(parsed.comparison);
+    store.sessions[key] = {
+      version: 1,
+      comparison: parsed.comparison,
+      annotations: [...parsed.annotations],
+    };
+    await writeAnnotationStore(parsed.repoPath, store);
+    return store.sessions[key].annotations;
+  },
+);
 
 ipcMain.handle("repo:choose", async (event): Promise<RepoSnapshot | null> => {
   const state = getWindowState(event);
@@ -816,6 +857,111 @@ async function writeSettings(settings: AppSettings): Promise<void> {
 
 function getSettingsPath(): string {
   return join(app.getPath("userData"), "settings.json");
+}
+
+function getAnnotationStorePath(repoPath: string): string {
+  return join(repoPath, ".ziff", "annotations.json");
+}
+
+async function readAnnotationStore(repoPath: string): Promise<AnnotationStoreFile> {
+  try {
+    const raw = await readFile(getAnnotationStorePath(repoPath), "utf8");
+    return parseAnnotationStore(JSON.parse(raw));
+  } catch {
+    return { version: 1, sessions: {} };
+  }
+}
+
+async function writeAnnotationStore(repoPath: string, store: AnnotationStoreFile): Promise<void> {
+  const path = getAnnotationStorePath(repoPath);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(store, null, 2), "utf8");
+}
+
+function parseAnnotationRequest(value: unknown): AnnotationRequest {
+  if (typeof value !== "object" || value == null) {
+    throw new Error("Expected annotation request");
+  }
+
+  const repoPath =
+    "repoPath" in value && typeof value.repoPath === "string" ? value.repoPath : null;
+  if (repoPath == null || repoPath.length === 0) {
+    throw new Error("Expected repo path");
+  }
+
+  const comparison = "comparison" in value ? tryParseDiffComparison(value.comparison) : null;
+  if (comparison == null) {
+    throw new Error("Expected comparison");
+  }
+
+  return { repoPath, comparison };
+}
+
+function tryParseDiffComparison(value: unknown): DiffComparison | null {
+  try {
+    return parseDiffComparison(value);
+  } catch {
+    return null;
+  }
+}
+
+function parseAnnotationSaveRequest(
+  value: unknown,
+): AnnotationRequest & { annotations: readonly Annotation[] } {
+  const request = parseAnnotationRequest(value);
+  if (typeof value !== "object" || value == null || !("annotations" in value)) {
+    throw new Error("Expected annotations");
+  }
+  if (!Array.isArray(value.annotations)) {
+    throw new Error("Expected annotations array");
+  }
+
+  const annotations = value.annotations.flatMap((item) => {
+    const annotation = parseAnnotationValue(item);
+    return annotation == null ? [] : [annotation];
+  });
+
+  return { ...request, annotations };
+}
+
+function parseAnnotationValue(value: unknown): Annotation | null {
+  if (typeof value !== "object" || value == null) {
+    return null;
+  }
+
+  if (
+    !("id" in value) ||
+    typeof value.id !== "string" ||
+    !("filePath" in value) ||
+    typeof value.filePath !== "string" ||
+    !("side" in value) ||
+    (value.side !== "old" && value.side !== "new") ||
+    !("lineStart" in value) ||
+    typeof value.lineStart !== "number" ||
+    !("lineEnd" in value) ||
+    typeof value.lineEnd !== "number" ||
+    !("kind" in value) ||
+    (value.kind !== "review" && value.kind !== "agent") ||
+    !("body" in value) ||
+    typeof value.body !== "string" ||
+    !("createdAt" in value) ||
+    typeof value.createdAt !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    id: value.id,
+    filePath: value.filePath,
+    side: value.side,
+    lineStart: value.lineStart,
+    lineEnd: value.lineEnd,
+    kind: value.kind,
+    body: value.body,
+    createdAt: value.createdAt,
+    author: "author" in value && typeof value.author === "string" ? value.author : undefined,
+    resolved: "resolved" in value && value.resolved === true,
+  };
 }
 
 function parseSettings(value: unknown): AppSettings {
