@@ -86,6 +86,8 @@ import type {
 
 type DiffBodyStyle = CSSProperties & { "--split-width": string };
 
+type CodeCellStyle = CSSProperties & { "--empty-pattern-offset"?: number | string };
+
 type FileRenderMode = "code" | "preview";
 
 type ImagePreviewState =
@@ -2172,10 +2174,31 @@ export const DiffPreviewList = memo(function DiffPreviewList({
         if (active?.pointerId === pointerId) {
           if (active.frameId != null) {
             window.cancelAnimationFrame(active.frameId);
+            active.frameId = null;
+          }
+          const pendingPosition = active.pendingPosition;
+          active.pendingPosition = null;
+          if (pendingPosition != null) {
+            const target = document.elementFromPoint(
+              pendingPosition.clientX,
+              pendingPosition.clientY,
+            );
+            if (target != null) {
+              const anchor = getAnnotationAnchorFromGutterTarget(target);
+              if (anchor != null && anchor.file === active.file && anchor.side === active.side) {
+                active.finalAnchor = getAnnotationDragRange(active, anchor);
+              }
+            }
           }
           clearAnnotationDragPreview(active);
           annotationDragRef.current = null;
-          onAddAnnotation(active.finalAnchor, active.mode === "extend" ? "extend" : "range");
+          const selectionMode =
+            active.mode === "extend"
+              ? "extend"
+              : active.finalAnchor.lineStart === active.finalAnchor.lineEnd
+                ? "replace"
+                : "range";
+          onAddAnnotation(active.finalAnchor, selectionMode);
         }
         setAnnotationDragActive(false);
       },
@@ -3082,6 +3105,7 @@ function SplitRow({
           annotationsByAnchor={annotationsByAnchor}
           annotationActions={annotationActions}
           filePath={filePath}
+          patternOffset={row.oldLine - 1}
           side="new"
           line={null}
           content=""
@@ -3103,6 +3127,7 @@ function SplitRow({
           annotationsByAnchor={annotationsByAnchor}
           annotationActions={annotationActions}
           filePath={filePath}
+          patternOffset={row.newLine - 1}
           side="old"
           line={null}
           content=""
@@ -3327,6 +3352,7 @@ function CodeCell({
   onAddAnnotation,
   onCancelAnnotation,
   onSaveAnnotation,
+  patternOffset,
   prefix,
   selectedAnnotationId,
   side,
@@ -3345,6 +3371,7 @@ function CodeCell({
   onAddAnnotation(anchor: AnnotationAnchor, mode: AnnotationSelectionMode): void;
   onCancelAnnotation(): void;
   onSaveAnnotation(kind: AnnotationKind, body: string): void;
+  patternOffset?: number;
   prefix?: string;
   selectedAnnotationId: string | null;
   side: "old" | "new" | "both";
@@ -3397,7 +3424,7 @@ function CodeCell({
     }
   }
 
-  function startLineAnnotationDrag(event: PointerEvent<HTMLSpanElement>) {
+  function startLineAnnotationDrag(event: PointerEvent<HTMLElement>) {
     if (anchor == null || event.button !== 0) {
       return;
     }
@@ -3408,13 +3435,24 @@ function CodeCell({
       return;
     }
 
+    const captureTarget = event.currentTarget;
+    try {
+      captureTarget.setPointerCapture(pointerId);
+    } catch {
+      onAddAnnotation(anchor, event.shiftKey ? "extend" : "replace");
+      return;
+    }
+
     const dragController = annotationDrag;
     dragController.start(anchor, pointerId, event.shiftKey ? "extend" : "replace");
 
     function cleanup() {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-      window.removeEventListener("pointercancel", onPointerCancel);
+      captureTarget.removeEventListener("pointermove", onPointerMove);
+      captureTarget.removeEventListener("pointerup", onPointerUp);
+      captureTarget.removeEventListener("pointercancel", onPointerCancel);
+      if (captureTarget.hasPointerCapture(pointerId)) {
+        captureTarget.releasePointerCapture(pointerId);
+      }
     }
 
     function onPointerMove(pointerEvent: globalThis.PointerEvent) {
@@ -3440,9 +3478,9 @@ function CodeCell({
       cleanup();
     }
 
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-    window.addEventListener("pointercancel", onPointerCancel);
+    captureTarget.addEventListener("pointermove", onPointerMove);
+    captureTarget.addEventListener("pointerup", onPointerUp);
+    captureTarget.addEventListener("pointercancel", onPointerCancel);
   }
 
   function extendLineAnnotationDrag() {
@@ -3451,8 +3489,13 @@ function CodeCell({
     }
   }
 
+  const style: CodeCellStyle | undefined =
+    tone === "empty" && patternOffset != null
+      ? { "--empty-pattern-offset": patternOffset }
+      : undefined;
+
   return (
-    <div className={getCodeCellClassName(side, tone, selected)}>
+    <div className={getCodeCellClassName(side, tone, selected)} style={style}>
       <span
         className={annotations.length > 0 ? "line-number annotated" : "line-number"}
         data-annotation-file={anchor?.file}
@@ -3466,12 +3509,14 @@ function CodeCell({
           <button
             aria-label={`Annotate line ${anchor.lineStart}`}
             className="line-annotate-button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onAddAnnotation(anchor, event.shiftKey ? "extend" : "replace");
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onAddAnnotation(anchor, event.shiftKey ? "extend" : "replace");
+              }
             }}
-            onPointerDown={(event) => event.stopPropagation()}
             title="Annotate line"
+            type="button"
           >
             <Plus size={10} />
           </button>

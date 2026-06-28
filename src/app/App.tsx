@@ -295,6 +295,9 @@ export function App() {
 
   function startAnnotation(anchor: AnnotationAnchor, mode: AnnotationSelectionMode) {
     setAnnotationEditor((current) => {
+      if (mode === "replace") {
+        return { type: "create", anchor, kind: annotationKind };
+      }
       if (
         mode === "range" &&
         current?.type === "create" &&

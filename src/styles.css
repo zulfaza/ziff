@@ -1246,6 +1246,8 @@ textarea {
 }
 
 .diff-body {
+  --diff-row-height: calc(1lh + 4px);
+  --empty-stripe-width: 2px;
   font-family: "Berkeley Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 12.5px;
   font-weight: 400;
@@ -1597,8 +1599,11 @@ textarea {
 }
 
 .code-content code {
+  box-sizing: border-box;
   color: var(--text);
   cursor: pointer;
+  line-height: calc(var(--diff-row-height) - 4px);
+  min-height: var(--diff-row-height);
   min-width: 0;
   overflow: hidden;
   padding: 2px 12px;
@@ -1609,10 +1614,13 @@ textarea {
 .line-number {
   align-items: center;
   background: var(--editor-gutter-background);
+  box-sizing: border-box;
   color: var(--text-disabled);
   cursor: pointer;
-  display: block;
-  padding: 2px 12px 2px 8px;
+  display: flex;
+  justify-content: flex-end;
+  min-height: var(--diff-row-height);
+  padding: 0 12px 0 8px;
   position: relative;
   text-align: right;
   user-select: none;
@@ -1720,29 +1728,29 @@ textarea {
   color: var(--version-control-deleted-text);
 }
 
-.code-cell.empty {
+.code-cell.empty .code-content {
   background: repeating-linear-gradient(
     -45deg,
     var(--editor-background) 0,
-    var(--editor-background) 8px,
-    var(--editor-subheader-background) 8px,
-    var(--editor-subheader-background) 10px
+    var(--editor-background) calc(var(--diff-row-height) - var(--empty-stripe-width)),
+    var(--editor-subheader-background) calc(var(--diff-row-height) - var(--empty-stripe-width)),
+    var(--editor-subheader-background) var(--diff-row-height)
   );
+  background-position: calc(var(--empty-pattern-offset, 0) * var(--diff-row-height) * -1)
+    calc(var(--empty-pattern-offset, 0) * var(--diff-row-height) * -1);
+  background-size: var(--diff-row-height) var(--diff-row-height);
 }
 
-.code-cell.selected {
-  background: rgba(69, 120, 201, 0.22);
-}
-
+.code-cell.selected,
 .diff-body.annotation-dragging .code-cell.selected,
 .diff-body.annotation-dragging .code-cell.annotation-drag-preview {
-  animation: annotation-selection-pulse 0.75s ease-in-out infinite;
-  box-shadow: inset 3px 0 0 var(--text-accent);
+  background: var(--selection-background);
 }
 
+.code-cell.selected .line-number,
 .diff-body.annotation-dragging .code-cell.selected .line-number,
 .diff-body.annotation-dragging .code-cell.annotation-drag-preview .line-number {
-  animation: annotation-gutter-pulse 0.75s ease-in-out infinite;
+  background: color-mix(in lab, var(--editor-gutter-background) 60%, var(--text-accent));
   color: var(--text-accent);
 }
 
@@ -1750,35 +1758,18 @@ textarea {
   cursor: ns-resize;
 }
 
-@keyframes annotation-selection-pulse {
-  0%,
-  100% {
-    background: rgba(69, 120, 201, 0.24);
-  }
-  50% {
-    background: rgba(69, 120, 201, 0.44);
-  }
-}
-
-@keyframes annotation-gutter-pulse {
-  0%,
-  100% {
-    background: rgba(69, 120, 201, 0.24);
-  }
-  50% {
-    background: rgba(69, 120, 201, 0.5);
-  }
+.diff-body.annotation-dragging .resize-slider {
+  pointer-events: none;
 }
 
 .annotation-thread,
 .annotation-composer-wrap {
-  background: #141414;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 22px var(--shadow-elevated);
-  margin: 20px;
-  max-width: min(70%, 980px);
-  padding: 18px;
+  border: 1px solid var(--text);
+  border-radius: 4px;
+  margin: 8px;
+  max-width: 600px;
+  overflow: hidden;
+  padding: 8px;
   white-space: normal;
 }
 
@@ -1818,20 +1809,15 @@ img.annotation-avatar {
 }
 
 .annotation-composer textarea {
-  background: #090909;
-  border: 1px solid #5b5f68;
-  border-radius: 8px;
+  background: transparent;
+  border: 0;
   color: var(--text);
-  min-height: 72px;
+  field-sizing: content;
+  min-height: 2.5em;
   outline: none;
-  padding: 10px 12px;
-  resize: vertical;
+  padding: 0;
+  resize: none;
   width: 100%;
-}
-
-.annotation-composer textarea:focus {
-  border-color: #a7adb8;
-  box-shadow: 0 0 0 1px rgba(167, 173, 184, 0.55);
 }
 
 .annotation-composer textarea::placeholder {
@@ -1842,17 +1828,17 @@ img.annotation-avatar {
   align-items: center;
   display: flex;
   gap: 10px;
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .annotation-submit-button {
   background: var(--text);
   border: 0;
-  border-radius: 7px;
+  border-radius: 4px;
   color: #111;
   cursor: pointer;
   font-weight: 600;
-  padding: 7px 13px;
+  padding: 6px 12px;
 }
 
 .annotation-submit-button:disabled {
@@ -1881,28 +1867,28 @@ img.annotation-avatar {
   align-items: baseline;
   color: var(--text-muted);
   display: flex;
-  font-size: 13px;
+  font-size: 14px;
   gap: 8px;
 }
 
 .annotation-comment-meta strong {
   color: var(--text);
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .annotation-comment p {
   color: var(--text);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.45;
-  margin: 2px 0 0;
+  margin: 0;
+  padding: 0;
   white-space: pre-wrap;
 }
 
 .annotation-thread-actions {
   display: flex;
-  gap: 18px;
-  margin-left: 34px;
-  margin-top: 16px;
+  gap: 12px;
+  margin-top: 8px;
 }
 
 /* Wide transparent hit zone with a thin centered line that lights up on
